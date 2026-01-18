@@ -204,6 +204,7 @@ function handleApply($request)
         Loader::includeModule('iblock');
         $iblock = new \CIBlock();
         
+        // Создаём снапшот ДО изменений
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
@@ -220,36 +221,39 @@ function handleApply($request)
             Logger::createSnapshot(Logger::OBJ_IBLOCK, $snapshotData);
         }
         
+        // Применяем права
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
                 
                 try {
                     $currentPerms = $iblock->GetGroupPermissions($iblockId);
-                    $oldPerm = $currentPerms[$subject['id']] ?? null;
+                    $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
+                    $oldPerm = $currentPerms[$subjectKey] ?? null;
                     
-                    if ($subject['type'] === 'group') {
-                        $currentPerms[$subject['id']] = $permission;
-                        $iblock->SetPermission($iblockId, $currentPerms);
-                        
-                        Logger::log(
-                            Logger::OP_SET_PERMISSION,
-                            Logger::OBJ_IBLOCK,
-                            (string)$iblockId,
-                            'group',
-                            $subject['id'],
-                            $oldPerm ? [$subject['id'] => $oldPerm] : null,
-                            [$subject['id'] => $permission]
-                        );
-                        
-                        $successCount++;
-                    }
+                    // Устанавливаем новое право
+                    $currentPerms[$subjectKey] = $permission;
+                    $iblock->SetPermission($iblockId, $currentPerms);
+                    
+                    // Логируем
+                    Logger::log(
+                        Logger::OP_SET_PERMISSION,
+                        Logger::OBJ_IBLOCK,
+                        (string)$iblockId,
+                        $subject['type'],
+                        $subject['id'],
+                        $oldPerm ? [$subjectKey => $oldPerm] : null,
+                        [$subjectKey => $permission]
+                    );
+                    
+                    $successCount++;
                 } catch (\Exception $e) {
                     $errors[] = ['id' => $iblockId, 'message' => $e->getMessage()];
                 }
             }
         }
     } else {
+        // Файлы/папки
         global $APPLICATION;
         
         foreach ($selected as $item) {
@@ -276,24 +280,23 @@ function handleApply($request)
                     $currentPerms = [];
                 }
                 
-                $oldPerm = $currentPerms[$subject['id']] ?? null;
+                $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
+                $oldPerm = $currentPerms[$subjectKey] ?? null;
                 
-                if ($subject['type'] === 'group') {
-                    $currentPerms[$subject['id']] = $permission;
-                    $APPLICATION->SetFileAccessPermission($path, $currentPerms);
-                    
-                    Logger::log(
-                        Logger::OP_SET_PERMISSION,
-                        $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE,
-                        $path,
-                        'group',
-                        $subject['id'],
-                        $oldPerm ? [$subject['id'] => $oldPerm] : null,
-                        [$subject['id'] => $permission]
-                    );
-                    
-                    $successCount++;
-                }
+                $currentPerms[$subjectKey] = $permission;
+                $APPLICATION->SetFileAccessPermission($path, $currentPerms);
+                
+                Logger::log(
+                    Logger::OP_SET_PERMISSION,
+                    $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE,
+                    $path,
+                    $subject['type'],
+                    $subject['id'],
+                    $oldPerm ? [$subjectKey => $oldPerm] : null,
+                    [$subjectKey => $permission]
+                );
+                
+                $successCount++;
             } catch (\Exception $e) {
                 $errors[] = ['path' => $path, 'message' => $e->getMessage()];
             }
@@ -307,6 +310,7 @@ function handleApply($request)
     ]);
     die();
 }
+
 
 /**
  * Сброс к дефолтным правам
@@ -399,27 +403,59 @@ function handleRemoveSubject($request)
     $successCount = 0;
     $errors = [];
     
-    if ($mode === 'iblocks' && $subject['type'] === 'group') {
+    if ($mode === 'iblocks') {
         Loader::includeModule('iblock');
+        $iblock = new \CIBlock();
+        
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
                 try {
-                    IblockPermissions::removeGroupPermission($iblockId, $subject['id']);
-                    Logger::log(Logger::OP_REMOVE_PERMISSION, Logger::OBJ_IBLOCK, (string)$iblockId, 'group', $subject['id']);
-                    $successCount++;
+                    $currentPerms = $iblock->GetGroupPermissions($iblockId);
+                    $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
+                    
+                    if (isset($currentPerms[$subjectKey])) {
+                        unset($currentPerms[$subjectKey]);
+                        $iblock->SetPermission($iblockId, $currentPerms);
+                        
+                        Logger::log(
+                            Logger::OP_REMOVE_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            $subject['type'],
+                            $subject['id']
+                        );
+                        
+                        $successCount++;
+                    }
                 } catch (\Exception $e) {
                     $errors[] = ['id' => $iblockId, 'message' => $e->getMessage()];
                 }
             }
         }
-    } elseif ($mode === 'files' && $subject['type'] === 'group') {
+    } elseif ($mode === 'files') {
+        global $APPLICATION;
+        
         foreach ($selected as $item) {
             $path = $item['path'];
             try {
-                FilePermissions::removeGroupPermission($path, $subject['id']);
-                Logger::log(Logger::OP_REMOVE_PERMISSION, $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE, $path, 'group', $subject['id']);
-                $successCount++;
+                $currentPerms = $APPLICATION->GetFileAccessPermission($path);
+                $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
+                
+                if (is_array($currentPerms) && isset($currentPerms[$subjectKey])) {
+                    unset($currentPerms[$subjectKey]);
+                    $APPLICATION->SetFileAccessPermission($path, $currentPerms);
+                    
+                    Logger::log(
+                        Logger::OP_REMOVE_PERMISSION,
+                        $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE,
+                        $path,
+                        $subject['type'],
+                        $subject['id']
+                    );
+                    
+                    $successCount++;
+                }
             } catch (\Exception $e) {
                 $errors[] = ['path' => $path, 'message' => $e->getMessage()];
             }

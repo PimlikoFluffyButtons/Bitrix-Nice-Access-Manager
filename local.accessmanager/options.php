@@ -1,34 +1,21 @@
 <?php
 /**
- * Настройки модуля и регистрация в меню админки
+ * Настройки модуля - редирект на основную страницу управления
  */
 
 use Bitrix\Main\Localization\Loc;
 
+if (!defined('B_PROLOG_INCLUDED') || B_PROLOG_INCLUDED !== true) {
+    die();
+}
+
+global $USER, $APPLICATION;
+
+if (!$USER->IsAdmin()) {
+    return;
+}
+
 Loc::loadMessages(__FILE__);
 
-// Регистрация пункта меню в событии OnBuildGlobalMenu
-\Bitrix\Main\EventManager::getInstance()->addEventHandler(
-    'main',
-    'OnBuildGlobalMenu',
-    function (&$adminMenu, &$moduleMenu) {
-        global $USER;
-        
-        if (!$USER->IsAdmin()) {
-            return;
-        }
-        
-        // Добавляем в раздел "Настройки"
-        $moduleMenu[] = [
-            'parent_menu' => 'global_menu_settings',
-            'section' => 'local_accessmanager',
-            'sort' => 1000,
-            'text' => 'Управление доступом (массово)',
-            'title' => 'Массовое управление правами доступа к инфоблокам и файлам',
-            'url' => 'local_accessmanager.php',
-            'icon' => 'security_menu_icon',
-            'page_icon' => 'security_page_icon',
-            'items_id' => 'menu_local_accessmanager',
-        ];
-    }
-);
+// Редирект на основную страницу модуля
+LocalRedirect('/bitrix/admin/local_accessmanager.php?lang=' . LANGUAGE_ID);
