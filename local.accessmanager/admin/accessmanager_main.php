@@ -876,11 +876,14 @@ const AccessManager = {
     
     // Предпросмотр изменений
     preview: function(mode) {
+        console.log('Preview called for mode:', mode); // ОТЛАДКА
         this.currentMode = mode;
         
         const selected = this.getSelected(mode);
         const subject = this.getSubject(mode);
         const permission = this.getPermission(mode);
+        
+        console.log('Preview data:', {selected, subject, permission}); // ОТЛАДКА
         
         if (selected.length === 0) {
             alert('<?= Loc::getMessage('LOCAL_ACCESSMANAGER_WARN_NO_SELECTION') ?>');
@@ -895,6 +898,10 @@ const AccessManager = {
             return;
         }
         
+        // Сохраняем данные ДО отправки запроса
+        this.previewData = {mode, selected, subject, permission};
+        console.log('Preview data saved:', this.previewData); // ОТЛАДКА
+        
         document.getElementById('preview-content').innerHTML = '<p>Загрузка предпросмотра...</p>';
         document.getElementById('preview-modal').classList.add('active');
         
@@ -907,16 +914,31 @@ const AccessManager = {
                   '&subject=' + encodeURIComponent(JSON.stringify(subject)) +
                   '&permission=' + permission
         })
-        .then(r => r.json())
+        .then(r => {
+            console.log('Preview response status:', r.status); // ОТЛАДКА
+            return r.text();
+        })
+        .then(text => {
+            console.log('Preview response text:', text); // ОТЛАДКА
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                console.error('JSON parse error:', e); // ОТЛАДКА
+                throw new Error('Ответ сервера не является JSON: ' + text.substring(0, 100));
+            }
+            return data;
+        })
         .then(data => {
+            console.log('Preview data received:', data); // ОТЛАДКА
             if (data.success) {
-                this.previewData = {mode, selected, subject, permission};
                 this.renderPreview(data.preview);
             } else {
                 document.getElementById('preview-content').innerHTML = '<p style="color: #e74c3c;">' + (data.error || 'Ошибка') + '</p>';
             }
         })
         .catch(err => {
+            console.error('Preview error:', err); // ОТЛАДКА
             document.getElementById('preview-content').innerHTML = '<p style="color: #e74c3c;">Ошибка: ' + err.message + '</p>';
         });
     },
@@ -951,54 +973,104 @@ const AccessManager = {
     
     // Применить из превью
     applyFromPreview: function() {
-			if (!this.previewData) return;
-			
-			this.closePreview();
-			this.apply(this.previewData.mode, this.previewData.selected, this.previewData.subject, this.previewData.permission);
-		},
+        console.log('applyFromPreview called, previewData:', this.previewData); // ОТЛАДКА
+        
+        if (!this.previewData) {
+            console.error('previewData is null!'); // ОТЛАДКА
+            alert('Ошибка: данные превью не найдены. Попробуйте открыть превью заново.');
+            return;
+        }
+        
+        // Сохраняем данные ДО закрытия окна (closePreview обнуляет previewData)
+        const savedData = {
+            mode: this.previewData.mode,
+            selected: this.previewData.selected,
+            subject: this.previewData.subject,
+            permission: this.previewData.permission
+        };
+        
+        console.log('Saved data:', savedData); // ОТЛАДКА
+        
+        this.closePreview();
+        
+        console.log('Calling apply with saved data'); // ОТЛАДКА
+        this.apply(savedData.mode, savedData.selected, savedData.subject, savedData.permission);
+    },
 		
 		// Применить права
 		apply: function(mode, selected, subject, permission) {
-		const progressEl = document.getElementById(mode + '-progress');
-		const resultEl = document.getElementById(mode + '-result');
-		
-		progressEl.style.display = 'block';
-		resultEl.style.display = 'none';
-		resultEl.className = 'accessmanager-result';
-		
-		fetch('/bitrix/admin/local_accessmanager.php', {
-			method: 'POST',
-			headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-			body: 'action=apply&sessid=' + this.sessid + 
+			console.log('Apply called:', {mode, selected, subject, permission}); // ОТЛАДКА
+			
+			const progressEl = document.getElementById(mode + '-progress');
+			const resultEl = document.getElementById(mode + '-result');
+			
+			if (!progressEl || !resultEl) {
+				console.error('Elements not found:', mode); // ОТЛАДКА
+				alert('Ошибка: элементы интерфейса не найдены');
+				return;
+			}
+			
+			progressEl.style.display = 'block';
+			resultEl.style.display = 'none';
+			resultEl.className = 'accessmanager-result';
+			
+			const requestBody = 'action=apply&sessid=' + this.sessid + 
 				  '&mode=' + mode + 
 				  '&selected=' + encodeURIComponent(JSON.stringify(selected)) +
 				  '&subject=' + encodeURIComponent(JSON.stringify(subject)) +
-				  '&permission=' + permission
-		})
-		.then(r => r.json())
-		.then(data => {
-			progressEl.style.display = 'none';
+				  '&permission=' + permission;
 			
-			if (data.success) {
-				resultEl.className = 'accessmanager-result success';
-				resultEl.innerHTML = '<?= Loc::getMessage('LOCAL_ACCESSMANAGER_RESULT_SUCCESS') ?>: ' + data.successCount;
-				if (data.errors && data.errors.length > 0) {
-					resultEl.innerHTML += '<br><?= Loc::getMessage('LOCAL_ACCESSMANAGER_RESULT_ERRORS') ?>: ' + data.errors.length;
+			console.log('Sending request:', requestBody); // ОТЛАДКА
+			
+			fetch('/bitrix/admin/local_accessmanager.php', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+				body: requestBody
+			})
+			.then(response => {
+				console.log('Response status:', response.status); // ОТЛАДКА
+				if (!response.ok) {
+					throw new Error('HTTP error ' + response.status);
 				}
-			} else {
+				return response.text();
+			})
+			.then(text => {
+				console.log('Response text:', text); // ОТЛАДКА
+				let data;
+				try {
+					data = JSON.parse(text);
+				} catch (e) {
+					console.error('JSON parse error:', e, text); // ОТЛАДКА
+					throw new Error('Ответ сервера не является JSON: ' + text.substring(0, 100));
+				}
+				return data;
+			})
+			.then(data => {
+				console.log('Parsed data:', data); // ОТЛАДКА
+				progressEl.style.display = 'none';
+				
+				if (data.success) {
+					resultEl.className = 'accessmanager-result success';
+					resultEl.innerHTML = 'Успешно обработано: ' + data.successCount;
+					if (data.errors && data.errors.length > 0) {
+						resultEl.innerHTML += '<br>Ошибок: ' + data.errors.length;
+						console.error('Errors:', data.errors); // ОТЛАДКА
+					}
+				} else {
+					resultEl.className = 'accessmanager-result error';
+					resultEl.innerHTML = data.error || 'Ошибка применения';
+				}
+				resultEl.style.display = '';
+			})
+			.catch(err => {
+				console.error('Fetch error:', err); // ОТЛАДКА
+				progressEl.style.display = 'none';
 				resultEl.className = 'accessmanager-result error';
-				resultEl.innerHTML = data.error || 'Ошибка применения';
-			}
-			// ИСПРАВЛЕНИЕ: очищаем inline style чтобы класс работал
-			resultEl.style.display = '';
-		})
-		.catch(err => {
-			progressEl.style.display = 'none';
-			resultEl.className = 'accessmanager-result error';
-			resultEl.innerHTML = 'Ошибка: ' + err.message;
-			resultEl.style.display = '';
-		});
-	},
+				resultEl.innerHTML = 'Ошибка: ' + err.message;
+				resultEl.style.display = '';
+				alert('Ошибка: ' + err.message); // Показываем алерт для отладки
+			});
+		},
     // Сброс к дефолту
     resetDefault: function(mode) {
         const selected = this.getSelected(mode);

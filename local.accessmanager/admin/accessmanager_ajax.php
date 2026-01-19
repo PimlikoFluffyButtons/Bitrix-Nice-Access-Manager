@@ -191,6 +191,18 @@ function handleApply($request)
     $subject = json_decode($request->getPost('subject'), true);
     $permission = $request->getPost('permission');
     
+    // ОТЛАДКА - записываем в файл
+    file_put_contents(
+        $_SERVER['DOCUMENT_ROOT'] . '/local/modules/local.accessmanager/accessmanager_debug.log',
+        date('Y-m-d H:i:s') . ' - APPLY REQUEST: ' . json_encode([
+            'mode' => $mode,
+            'selected' => $selected,
+            'subject' => $subject,
+            'permission' => $permission,
+        ], JSON_UNESCAPED_UNICODE) . "\n",
+        FILE_APPEND
+    );
+    
     if (!$selected || !$subject || !$permission) {
         echo json_encode(['success' => false, 'error' => 'Недостаточно данных']);
         die();
