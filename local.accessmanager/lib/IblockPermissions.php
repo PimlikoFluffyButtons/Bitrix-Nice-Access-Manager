@@ -103,6 +103,7 @@ class IblockPermissions
 
     /**
      * Получить текущие права инфоблока
+     * Возвращает права групп (через API) и пользователей (через БД)
      * 
      * @param int $iblockId
      * @return array
@@ -113,18 +114,36 @@ class IblockPermissions
             return [];
         }
 
+        $result = [];
+        
+        // 1. Получаем права ГРУПП через стандартный API
         $iblock = new \CIBlock();
         $permissions = $iblock->GetGroupPermissions($iblockId);
-
-        $result = [];
-        foreach ($permissions as $groupId => $permission) {
-            $groupName = self::getGroupName($groupId);
+        
+        foreach ($permissions as $key => $permission) {
+            if (is_numeric($key)) {
+                $groupName = self::getGroupName((int)$key);
+                $result[] = [
+                    'subjectType' => 'group',
+                    'subjectId' => (int)$key,
+                    'subjectName' => $groupName,
+                    'permission' => $permission,
+                    'permissionName' => self::PERMISSIONS[$permission] ?? $permission,
+                    'source' => 'explicit',
+                ];
+            }
+        }
+        
+        // 2. Получаем права ПОЛЬЗОВАТЕЛЕЙ через UserIblockPermissions
+        $userPermissions = \Local\AccessManager\UserIblockPermissions::getUsersWithPermissions($iblockId);
+        
+        foreach ($userPermissions as $userPerm) {
             $result[] = [
-                'subjectType' => 'group',
-                'subjectId' => (int)$groupId,
-                'subjectName' => $groupName,
-                'permission' => $permission,
-                'permissionName' => self::PERMISSIONS[$permission] ?? $permission,
+                'subjectType' => 'user',
+                'subjectId' => $userPerm['userId'],
+                'subjectName' => $userPerm['userName'],
+                'permission' => $userPerm['permission'],
+                'permissionName' => self::PERMISSIONS[$userPerm['permission']] ?? $userPerm['permission'],
                 'source' => 'explicit',
             ];
         }
@@ -156,6 +175,59 @@ class IblockPermissions
     }
 
     /**
+     * Установить права для пользователя на инфоблок
+     * ИСПРАВЛЕННЫЙ МЕТОД - через прямую работу с БД
+     * 
+     * @param int $iblockId
+     * @param int $userId
+     * @param string $permission
+     * @return bool
+     */
+    public static function setUserPermission(int $iblockId, int $userId, string $permission): bool
+    {
+        global $DB;
+        
+        if (!Loader::includeModule('iblock')) {
+            return false;
+        }
+
+        // Формируем ключ для пользователя
+        $userKey = 'U' . $userId;
+        
+        // Проверяем, есть ли уже такая запись
+        $existing = $DB->Query("
+            SELECT * FROM b_iblock_group 
+            WHERE IBLOCK_ID = " . (int)$iblockId . " 
+            AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
+        ")->Fetch();
+        
+        if ($existing) {
+            // Обновляем существующую запись
+            $DB->Query("
+                UPDATE b_iblock_group 
+                SET PERMISSION = '" . $DB->ForSql($permission) . "'
+                WHERE IBLOCK_ID = " . (int)$iblockId . " 
+                AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
+            ");
+        } else {
+            // Создаём новую запись
+            $DB->Query("
+                INSERT INTO b_iblock_group (IBLOCK_ID, GROUP_ID, PERMISSION)
+                VALUES (
+                    " . (int)$iblockId . ",
+                    '" . $DB->ForSql($userKey) . "',
+                    '" . $DB->ForSql($permission) . "'
+                )
+            ");
+        }
+        
+        // Очищаем кеш прав инфоблока
+        \CBitrixComponent::clearComponentCache('bitrix:iblock');
+        
+        return true;
+    }
+
+    /**
      * Удалить группу из прав инфоблока
      * 
      * @param int $iblockId
@@ -175,6 +247,38 @@ class IblockPermissions
             unset($currentPermissions[$groupId]);
             $iblock->SetPermission($iblockId, $currentPermissions);
         }
+
+        return true;
+    }
+
+    /**
+     * Удалить пользователя из прав инфоблока
+     * ИСПРАВЛЕННЫЙ МЕТОД - через прямую работу с БД
+     * 
+     * @param int $iblockId
+     * @param int $userId
+     * @return bool
+     */
+    public static function removeUserPermission(int $iblockId, int $userId): bool
+    {
+        global $DB;
+        
+        if (!Loader::includeModule('iblock')) {
+            return false;
+        }
+
+        // Формируем ключ для пользователя
+        $userKey = 'U' . $userId;
+        
+        // Удаляем запись из БД
+        $DB->Query("
+            DELETE FROM b_iblock_group 
+            WHERE IBLOCK_ID = " . (int)$iblockId . " 
+            AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
+        ");
+        
+        // Очищаем кеш прав инфоблока
+        \CBitrixComponent::clearComponentCache('bitrix:iblock');
 
         return true;
     }
@@ -255,6 +359,34 @@ class IblockPermissions
         }
 
         return $groups[$groupId] ?? "Группа #{$groupId}";
+    }
+
+    /**
+     * Получить имя пользователя
+     * НОВЫЙ МЕТОД
+     * 
+     * @param int $userId
+     * @return string
+     */
+    private static function getUserName(int $userId): string
+    {
+        static $users = null;
+
+        if ($users === null) {
+            $users = [];
+        }
+
+        if (!isset($users[$userId])) {
+            $user = \CUser::GetByID($userId)->Fetch();
+            if ($user) {
+                $name = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+                $users[$userId] = $name ?: $user['LOGIN'];
+            } else {
+                $users[$userId] = "Пользователь #{$userId}";
+            }
+        }
+
+        return $users[$userId];
     }
 
     /**
