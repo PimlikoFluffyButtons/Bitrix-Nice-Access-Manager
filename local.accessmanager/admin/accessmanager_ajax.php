@@ -37,40 +37,40 @@ try {
         case 'get_permissions':
             handleGetPermissions($request);
             break;
-            
+
         case 'get_children':
             handleGetChildren($request);
             break;
-            
+
         case 'preview':
             handlePreview($request);
             break;
-            
+
         case 'apply':
             handleApply($request);
             break;
-            
+
         case 'reset_default':
             handleResetDefault($request);
             break;
-            
+
         case 'remove_subject':
             handleRemoveSubject($request);
             break;
-            
+
         case 'rollback':
             handleRollback($request);
             break;
-            
+
         case 'search_users':
             handleSearchUsers($request);
             break;
-            
+
         default:
             echo json_encode(['success' => false, 'error' => 'Неизвестное действие: ' . $action]);
             die();
     }
-} catch (Exception $e) {
+} catch (Throwable $e) {
     echo json_encode(['success' => false, 'error' => 'Ошибка: ' . $e->getMessage()]);
     die();
 }
@@ -84,10 +84,24 @@ function handleGetPermissions($request)
     $id = $request->getPost('id');
     
     if ($type === 'iblock') {
-        Loader::includeModule('iblock');
+        if (!Loader::includeModule('iblock')) {
+            echo json_encode(['success' => false, 'error' => 'Модуль инфоблоков не подключен']);
+            die();
+        }
+        if (!$id) {
+            echo json_encode(['success' => false, 'error' => 'Не указан ID инфоблока']);
+            die();
+        }
         $permissions = IblockPermissions::getPermissions((int)$id);
     } elseif (in_array($type, ['folder', 'file'])) {
+        if (!$id) {
+            echo json_encode(['success' => false, 'error' => 'Не указан путь объекта']);
+            die();
+        }
         $permissions = FilePermissions::getPermissions($id);
+    } elseif ($type === 'iblock_type') {
+        echo json_encode(['success' => false, 'error' => 'Выберите инфоблок внутри типа']);
+        die();
     } else {
         echo json_encode(['success' => false, 'error' => 'Неизвестный тип объекта']);
         die();
