@@ -9,6 +9,7 @@ ini_set('display_errors', 0);
 
 use Bitrix\Main\Loader;
 use Local\AccessManager\IblockPermissions;
+use Local\AccessManager\UserIblockPermissions;
 use Local\AccessManager\FilePermissions;
 use Local\AccessManager\Logger;
 
@@ -193,7 +194,7 @@ function handleApply($request)
     
     // ОТЛАДКА - записываем в файл
     file_put_contents(
-        $_SERVER['DOCUMENT_ROOT'] . '/local/modules/local.accessmanager/accessmanager_debug.log',
+        $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
         date('Y-m-d H:i:s') . ' - APPLY REQUEST: ' . json_encode([
             'mode' => $mode,
             'selected' => $selected,
@@ -239,28 +240,90 @@ function handleApply($request)
                 $iblockId = (int)$item['id'];
                 
                 try {
-                    $currentPerms = $iblock->GetGroupPermissions($iblockId);
-                    $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
-                    $oldPerm = $currentPerms[$subjectKey] ?? null;
-                    
-                    // Устанавливаем новое право
-                    $currentPerms[$subjectKey] = $permission;
-                    $iblock->SetPermission($iblockId, $currentPerms);
-                    
-                    // Логируем
-                    Logger::log(
-                        Logger::OP_SET_PERMISSION,
-                        Logger::OBJ_IBLOCK,
-                        (string)$iblockId,
-                        $subject['type'],
-                        $subject['id'],
-                        $oldPerm ? [$subjectKey => $oldPerm] : null,
-                        [$subjectKey => $permission]
-                    );
+                    // Разная логика для групп и пользователей
+                    if ($subject['type'] === 'group') {
+                        // ДЛЯ ГРУПП: используем стандартный API Bitrix
+                        $iblock = new \CIBlock();
+                        $currentPerms = $iblock->GetGroupPermissions($iblockId);
+                        $subjectKey = (int)$subject['id'];
+                        $oldPerm = $currentPerms[$subjectKey] ?? null;
+                        
+                        // ОТЛАДКА
+                        file_put_contents(
+                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
+                            date('Y-m-d H:i:s') . " - [GROUP] iblock=$iblockId, groupId={$subjectKey}, oldPerm=" . 
+                            ($oldPerm ?? 'null') . " -> newPerm=$permission\n",
+                            FILE_APPEND
+                        );
+                        
+                        // Устанавливаем новое право
+                        $currentPerms[$subjectKey] = $permission;
+                        $iblock->SetPermission($iblockId, $currentPerms);
+                        
+                        // Логируем
+                        Logger::log(
+                            Logger::OP_SET_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            $subject['type'],
+                            $subject['id'],
+                            $oldPerm ? [$subjectKey => $oldPerm] : null,
+                            [$subjectKey => $permission]
+                        );
+                    } else {
+                        // ДЛЯ ПОЛЬЗОВАТЕЛЕЙ: используем прямую работу с БД через UserIblockPermissions
+                        $userId = (int)$subject['id'];
+                        $oldPerm = UserIblockPermissions::getPermission($iblockId, $userId);
+                        
+                        // ОТЛАДКА
+                        file_put_contents(
+                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
+                            date('Y-m-d H:i:s') . " - [USER] iblock=$iblockId, userId={$userId}, oldPerm=" . 
+                            ($oldPerm ?? 'null') . " -> newPerm=$permission\n",
+                            FILE_APPEND
+                        );
+                        
+                        // Устанавливаем новое право через БД
+                        UserIblockPermissions::setPermission($iblockId, $userId, $permission);
+                        
+                        // Проверяем установку
+                        $newPerm = UserIblockPermissions::getPermission($iblockId, $userId);
+                        
+                        // ОТЛАДКА
+                        file_put_contents(
+                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
+                            date('Y-m-d H:i:s') . " - [USER] VERIFY: resultPerm=" . ($newPerm ?? 'null') . 
+                            ($newPerm === $permission ? ' ✓' : ' ✗ FAILED') . "\n",
+                            FILE_APPEND
+                        );
+                        
+                        // Логируем
+                        Logger::log(
+                            Logger::OP_SET_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            $subject['type'],
+                            $subject['id'],
+                            $oldPerm ? ['U' . $userId => $oldPerm] : null,
+                            ['U' . $userId => $permission]
+                        );
+                    }
                     
                     $successCount++;
                 } catch (\Exception $e) {
                     $errors[] = ['id' => $iblockId, 'message' => $e->getMessage()];
+                    
+                    // ОТЛАДКА
+                    file_put_contents(
+                        $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
+                        date('Y-m-d H:i:s') . " - ERROR (iblock=$iblockId): " . $e->getMessage() . "\n",
+                        FILE_APPEND
+                    );
+                }
+            }
+        }
+                        FILE_APPEND
+                    );
                 }
             }
         }
@@ -426,9 +489,28 @@ function handleRemoveSubject($request)
                     $currentPerms = $iblock->GetGroupPermissions($iblockId);
                     $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
                     
-                    if (isset($currentPerms[$subjectKey])) {
-                        unset($currentPerms[$subjectKey]);
-                        $iblock->SetPermission($iblockId, $currentPerms);
+                    // Проверяем наличие прав (для групп - в массиве, для пользователей - проверим после удаления)
+                    $hasPermission = isset($currentPerms[$subjectKey]);
+                    
+                    // Удаляем права разными методами для групп и пользователей
+                    if ($subject['type'] === 'group') {
+                        if ($hasPermission) {
+                            unset($currentPerms[$subjectKey]);
+                            $iblock->SetPermission($iblockId, $currentPerms);
+                            
+                            Logger::log(
+                                Logger::OP_REMOVE_PERMISSION,
+                                Logger::OBJ_IBLOCK,
+                                (string)$iblockId,
+                                $subject['type'],
+                                $subject['id']
+                            );
+                            
+                            $successCount++;
+                        }
+                    } else {
+                        // Для пользователей удаляем через БД с помощью UserIblockPermissions
+                        UserIblockPermissions::removePermission($iblockId, (int)$subject['id']);
                         
                         Logger::log(
                             Logger::OP_REMOVE_PERMISSION,
