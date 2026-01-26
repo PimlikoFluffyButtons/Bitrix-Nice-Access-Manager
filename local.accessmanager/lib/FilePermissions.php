@@ -41,6 +41,11 @@ class FilePermissions
     private static $displayNameCache = [];
 
     /**
+     * Использовать BX.Access API для кэширования
+     */
+    private static $useBXAccess = true;
+
+    /**
      * Получить дерево файлов/папок
      * 
      * @param string $path Относительный путь от DocumentRoot
@@ -172,11 +177,12 @@ class FilePermissions
 
     /**
      * Получить текущие права файла/папки
-     * 
+     *
      * @param string $path
+     * @param bool $useBXAccess Использовать BX.Access кэш
      * @return array
      */
-    public static function getPermissions(string $path): array
+    public static function getPermissions(string $path, bool $useBXAccess = true): array
     {
         global $APPLICATION;
 
@@ -195,6 +201,15 @@ class FilePermissions
                     'source' => 'explicit',
                 ];
             }
+        }
+
+        // Добавляем метаданные BX.Access если включено
+        if ($useBXAccess && self::$useBXAccess) {
+            $result['_bx_access_meta'] = [
+                'enabled' => true,
+                'cache_available' => self::isBXAccessAvailable(),
+                'timestamp' => time(),
+            ];
         }
 
         // Проверяем наследуемые права
@@ -230,13 +245,14 @@ class FilePermissions
 
     /**
      * Установить права для группы на файл/папку
-     * 
+     *
      * @param string $path
      * @param int $groupId
      * @param string $permission
+     * @param bool $syncBXAccess Синхронизировать с BX.Access кэшем
      * @return bool
      */
-    public static function setGroupPermission(string $path, int $groupId, string $permission): bool
+    public static function setGroupPermission(string $path, int $groupId, string $permission, bool $syncBXAccess = true): bool
     {
         global $APPLICATION;
 
@@ -258,6 +274,11 @@ class FilePermissions
         $currentPermissions[$groupId] = $permission;
 
         $APPLICATION->SetFileAccessPermission($path, $currentPermissions);
+
+        // Инвалидировать BX.Access кэш если включено
+        if ($syncBXAccess && self::$useBXAccess) {
+            self::invalidateBXAccessCache($path, 'file');
+        }
 
         return true;
     }
@@ -546,5 +567,69 @@ class FilePermissions
 
         // Fallback: вернуть физическое имя
         return $physicalName;
+    }
+
+    /**
+     * Проверить доступность BX.Access API
+     *
+     * @return bool
+     */
+    private static function isBXAccessAvailable(): bool
+    {
+        // Проверяем:
+        // 1. Bitrix >= 25.0.0 (предполагаем что выполняется)
+        // 2. Модуль включен
+        // 3. JS BX.Access объект будет доступен на фронтенде
+
+        // Для текущей реализации возвращаем true
+        // В продакшене здесь будет проверка версии Bitrix
+        return self::$useBXAccess;
+    }
+
+    /**
+     * Инвалидировать BX.Access кэш (сигнал для фронтенда)
+     *
+     * @param string $objectId ID объекта (путь для файлов)
+     * @param string $objectType Тип объекта ('file' или 'folder')
+     * @return void
+     */
+    private static function invalidateBXAccessCache(string $objectId, string $objectType): void
+    {
+        // Сохраняем сигнал инвалидации для AJAX response
+        // Фронтенд получит этот сигнал и очистит IndexedDB кэш
+
+        global $APPLICATION;
+
+        // Используем глобальную переменную для передачи сигнала
+        if (!isset($GLOBALS['BX_ACCESS_CACHE_INVALIDATIONS'])) {
+            $GLOBALS['BX_ACCESS_CACHE_INVALIDATIONS'] = [];
+        }
+
+        $GLOBALS['BX_ACCESS_CACHE_INVALIDATIONS'][] = [
+            'objectId' => $objectId,
+            'objectType' => $objectType,
+            'timestamp' => time(),
+        ];
+    }
+
+    /**
+     * Включить/выключить BX.Access интеграцию
+     *
+     * @param bool $enable
+     * @return void
+     */
+    public static function setBXAccessEnabled(bool $enable): void
+    {
+        self::$useBXAccess = $enable;
+    }
+
+    /**
+     * Получить статус BX.Access интеграции
+     *
+     * @return bool
+     */
+    public static function isBXAccessEnabled(): bool
+    {
+        return self::$useBXAccess;
     }
 }

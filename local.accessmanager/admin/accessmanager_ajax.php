@@ -80,6 +80,10 @@ try {
             handleBXAccessSync($request);
             break;
 
+        case 'load_all_users':
+            handleLoadAllUsers($request);
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'Неизвестное действие: ' . $action]);
             die();
@@ -405,10 +409,20 @@ function handleApply($request)
         }
     }
     
+    // ========================================
+    // НОВОЕ: Инвалидировать BX.Access кэш
+    // ========================================
+    $invalidationSignal = generateBXAccessCacheInvalidation(
+        $selected,
+        $mode,
+        'update'
+    );
+
     echo json_encode([
         'success' => true,
         'successCount' => $successCount,
         'errors' => $errors,
+        'bx_access_cache_invalidation' => $invalidationSignal,  // НОВОЕ
     ]);
     die();
 }
@@ -681,6 +695,69 @@ function handleSearchUsers($request)
     
     echo json_encode(['success' => true, 'users' => $users]);
     die();
+}
+
+/**
+ * Валидировать выбор против BX.Access кэша
+ *
+ * @param array $selected Выбранные объекты
+ * @param array $subject Субъект доступа
+ * @param string $mode 'iblocks' или 'files'
+ * @return array ['valid' => bool, 'error' => string]
+ */
+function validateBXAccessSelection($selected, $subject, $mode)
+{
+    // Получить список валидных объектов из системы
+    if ($mode === 'iblocks') {
+        Loader::includeModule('iblock');
+        $selectedIds = array_column($selected, 'id');
+
+        // Проверить, все ли выбранные объекты существуют
+        $iblockRes = \Bitrix\Iblock\IblockTable::getList([
+            'select' => ['ID'],
+            'filter' => ['ID' => $selectedIds],
+        ]);
+
+        $validIds = [];
+        while ($iblock = $iblockRes->fetch()) {
+            $validIds[] = $iblock['ID'];
+        }
+
+        if (count($validIds) !== count($selectedIds)) {
+            return [
+                'valid' => false,
+                'error' => 'Some selected infoblocks no longer exist'
+            ];
+        }
+    } else {
+        // Для файлов проверить пути
+        foreach ($selected as $item) {
+            $path = $item['path'];
+            if (!FilePermissions::isPathSafe($path)) {
+                return [
+                    'valid' => false,
+                    'error' => 'Invalid file path: ' . $path
+                ];
+            }
+        }
+    }
+
+    return ['valid' => true];
+}
+
+/**
+ * Сгенерировать сигнал инвалидации кэша BX.Access
+ */
+function generateBXAccessCacheInvalidation($selected, $mode, $action)
+{
+    return [
+        'action' => $action,      // 'update', 'delete', 'reset'
+        'mode' => $mode,          // 'iblocks', 'files'
+        'itemCount' => count($selected),
+        'itemIds' => array_column($selected, 'id'),
+        'invalidateAll' => false, // true = очистить весь кэш
+        'timestamp' => time()
+    ];
 }
 
 /**
