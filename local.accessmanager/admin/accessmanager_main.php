@@ -29,6 +29,10 @@ if ($request->isAjaxRequest() && $request->isPost()) {
 // Подключаем визуальную часть
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
 
+// Подключаем BX.Access API для работы с диалогом выбора пользователей/групп/подразделений
+\Bitrix\Main\UI\Extension::load('main.core');
+$APPLICATION->AddHeadScript('/bitrix/js/main/core/core_access.js');
+
 // Формируем табы
 $aTabs = [
     [
@@ -368,6 +372,42 @@ $snapshots = Logger::getSnapshots(20);
     margin: 0 0 10px 0;
     color: #3498db;
 }
+.accessmanager-selected-subjects {
+    min-height: 60px;
+    padding: 10px;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+.accessmanager-subject-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.accessmanager-subject-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #fff;
+    border: 1px solid #d0d0d0;
+    border-radius: 16px;
+    font-size: 13px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+.accessmanager-subject-item button {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    font-size: 14px;
+    color: #e74c3c;
+    margin-left: 4px;
+}
+.accessmanager-subject-item button:hover {
+    opacity: 0.7;
+}
 </style>
 
 <?php
@@ -493,37 +533,22 @@ $tabControl->Begin();
             </div>
         </div>
 
-        <!-- BX.Access Integration Section -->
+        <!-- BX.Access Integration Section (НОВАЯ РЕАЛИЗАЦИЯ) -->
         <div class="accessmanager-bx-access" id="iblocks-bx-access">
-            <h4>BX.Access Integration</h4>
+            <h4>BX.Access: Расширенный выбор субъектов</h4>
             <div class="accessmanager-form-group">
-                <label>
-                    <input type="checkbox" id="iblock-enable-bx-access" onchange="AccessManager.toggleBXAccess('iblocks', this.checked)">
-                    Enable BX.Access synchronization
-                </label>
+                <label>Выбранные субъекты:</label>
+                <div class="accessmanager-selected-subjects" id="iblocks-selected-subjects">
+                    <p style="color: #888;">Нажмите кнопку ниже для выбора пользователей, групп или подразделений</p>
+                </div>
             </div>
-            <div id="iblock-bx-access-options" style="display: none; margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
-                <div class="accessmanager-form-group">
-                    <label>Permission level:</label>
-                    <select id="iblock-bx-access-level">
-                        <option value="">Select...</option>
-                        <option value="READ">Read</option>
-                        <option value="WRITE">Write</option>
-                        <option value="FULL">Full</option>
-                    </select>
-                </div>
-                <div class="accessmanager-form-group">
-                    <label>
-                        <input type="checkbox" id="iblock-sync-to-bx">
-                        Sync permissions to BX.Access cache
-                    </label>
-                </div>
-                <div class="accessmanager-form-group">
-                    <label>
-                        <input type="checkbox" id="iblock-use-bx-cache">
-                        Use BX.Access client-side cache
-                    </label>
-                </div>
+            <div class="accessmanager-buttons">
+                <button type="button" class="accessmanager-btn accessmanager-btn-success" onclick="AccessManager.openAccessDialog('iblocks')">
+                    ➕ Открыть диалог BX.Access
+                </button>
+                <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeSelectedSubjects('iblocks')">
+                    ❌ Удалить всех выбранных
+                </button>
             </div>
         </div>
     </div>
@@ -628,37 +653,22 @@ $tabControl->Begin();
             </div>
         </div>
 
-        <!-- BX.Access Integration Section -->
+        <!-- BX.Access Integration Section (НОВАЯ РЕАЛИЗАЦИЯ) -->
         <div class="accessmanager-bx-access" id="files-bx-access">
-            <h4>BX.Access Integration</h4>
+            <h4>BX.Access: Расширенный выбор субъектов</h4>
             <div class="accessmanager-form-group">
-                <label>
-                    <input type="checkbox" id="file-enable-bx-access" onchange="AccessManager.toggleBXAccess('files', this.checked)">
-                    Enable BX.Access synchronization
-                </label>
+                <label>Выбранные субъекты:</label>
+                <div class="accessmanager-selected-subjects" id="files-selected-subjects">
+                    <p style="color: #888;">Нажмите кнопку ниже для выбора пользователей, групп или подразделений</p>
+                </div>
             </div>
-            <div id="file-bx-access-options" style="display: none; margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
-                <div class="accessmanager-form-group">
-                    <label>Permission level:</label>
-                    <select id="file-bx-access-level">
-                        <option value="">Select...</option>
-                        <option value="READ">Read</option>
-                        <option value="WRITE">Write</option>
-                        <option value="FULL">Full</option>
-                    </select>
-                </div>
-                <div class="accessmanager-form-group">
-                    <label>
-                        <input type="checkbox" id="file-sync-to-bx">
-                        Sync permissions to BX.Access cache
-                    </label>
-                </div>
-                <div class="accessmanager-form-group">
-                    <label>
-                        <input type="checkbox" id="file-use-bx-cache">
-                        Use BX.Access client-side cache
-                    </label>
-                </div>
+            <div class="accessmanager-buttons">
+                <button type="button" class="accessmanager-btn accessmanager-btn-success" onclick="AccessManager.openAccessDialog('files')">
+                    ➕ Открыть диалог BX.Access
+                </button>
+                <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeSelectedSubjects('files')">
+                    ❌ Удалить всех выбранных
+                </button>
             </div>
         </div>
     </div>
@@ -781,6 +791,10 @@ const AccessManager = {
     sessid: '<?= bitrix_sessid() ?>',
     currentMode: 'iblocks',
     previewData: null,
+    selectedSubjects: {
+        iblocks: [],
+        files: []
+    },
     
     // Переключение типа субъекта
     toggleSubjectType: function(mode, type) {
@@ -789,27 +803,137 @@ const AccessManager = {
         document.getElementById(prefix + '-user-select').style.display = type === 'user' ? '' : 'none';
     },
 
-    // Переключение BX.Access интеграции
-    toggleBXAccess: function(mode, enabled) {
-        const prefix = mode === 'iblocks' ? 'iblock' : 'file';
-        document.getElementById(prefix + '-bx-access-options').style.display = enabled ? '' : 'none';
-    },
+    // НОВЫЙ МЕТОД: Открытие диалога BX.Access
+    openAccessDialog: function(mode) {
+        console.log('openAccessDialog called for mode:', mode);
 
-    // Получить настройки BX.Access
-    getBXAccessSettings: function(mode) {
-        const prefix = mode === 'iblocks' ? 'iblock' : 'file';
-        const enabled = document.getElementById(prefix + '-enable-bx-access').checked;
-
-        if (!enabled) {
-            return null;
+        if (typeof BX === 'undefined' || typeof BX.Access === 'undefined') {
+            alert('BX.Access не инициализирован. Убедитесь, что подключен /bitrix/js/main/core/core_access.js');
+            console.error('BX.Access is not loaded');
+            return;
         }
 
-        return {
-            enabled: true,
-            level: document.getElementById(prefix + '-bx-access-level').value,
-            syncToBX: document.getElementById(prefix + '-sync-to-bx').checked,
-            useCache: document.getElementById(prefix + '-use-bx-cache').checked
+        const bind = 'accessmanager_' + mode;
+
+        try {
+            BX.Access.ShowForm({
+                bind: bind,
+                showSelected: true,
+                callback: (selected) => {
+                    console.log('BX.Access callback received:', selected);
+                    this.onSubjectsSelected(mode, selected);
+                }
+            });
+        } catch (err) {
+            console.error('Error opening BX.Access dialog:', err);
+            alert('Ошибка открытия диалога BX.Access: ' + err.message);
+        }
+    },
+
+    // НОВЫЙ МЕТОД: Обработка выбранных субъектов
+    onSubjectsSelected: function(mode, selected) {
+        console.log('onSubjectsSelected called:', mode, selected);
+
+        if (!selected || Object.keys(selected).length === 0) {
+            console.log('No subjects selected');
+            return;
+        }
+
+        const subjects = [];
+
+        // Преобразуем формат BX.Access в наш формат
+        for (let provider in selected) {
+            for (let id in selected[provider]) {
+                const item = selected[provider][id];
+                subjects.push({
+                    provider: provider,  // 'users', 'groups', 'departments'
+                    id: id,
+                    name: item.name || item.title || ('ID: ' + id)
+                });
+            }
+        }
+
+        console.log('Processed subjects:', subjects);
+        this.updateSelectedSubjectsDisplay(mode, subjects);
+    },
+
+    // НОВЫЙ МЕТОД: Отображение выбранных субъектов
+    updateSelectedSubjectsDisplay: function(mode, subjects) {
+        console.log('updateSelectedSubjectsDisplay called:', mode, subjects);
+
+        const container = document.getElementById(mode + '-selected-subjects');
+
+        if (!container) {
+            console.error('Container not found:', mode + '-selected-subjects');
+            return;
+        }
+
+        if (!subjects || subjects.length === 0) {
+            container.innerHTML = '<p style="color: #888;">Нажмите кнопку ниже для выбора пользователей, групп или подразделений</p>';
+            this.selectedSubjects[mode] = [];
+            return;
+        }
+
+        // Иконки для разных типов провайдеров
+        const providerIcons = {
+            'users': '👤',
+            'groups': '👥',
+            'sonetgroups': '👥',
+            'departments': '🏢'
         };
+
+        let html = '<div class="accessmanager-subject-list">';
+        subjects.forEach(subject => {
+            const icon = providerIcons[subject.provider] || '❓';
+            const escapedName = this.htmlEscape(subject.name);
+            const escapedProvider = this.htmlEscape(subject.provider);
+            const escapedId = this.htmlEscape(subject.id);
+
+            html += `<div class="accessmanager-subject-item">
+                ${icon} ${escapedName} (${escapedId})
+                <button type="button" onclick="AccessManager.removeSubject('${mode}', '${escapedProvider}', '${escapedId}')">❌</button>
+            </div>`;
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+        this.selectedSubjects[mode] = subjects;
+
+        console.log('Display updated. Total subjects:', subjects.length);
+    },
+
+    // НОВЫЙ МЕТОД: Удаление всех выбранных субъектов
+    removeSelectedSubjects: function(mode) {
+        if (!confirm('Удалить всех выбранных субъектов?')) {
+            return;
+        }
+
+        this.updateSelectedSubjectsDisplay(mode, []);
+        console.log('All subjects removed for mode:', mode);
+    },
+
+    // НОВЫЙ МЕТОД: Удаление одного субъекта
+    removeSubject: function(mode, provider, id) {
+        console.log('removeSubject called:', mode, provider, id);
+
+        const subjects = this.selectedSubjects[mode] || [];
+        const filtered = subjects.filter(s => !(s.provider === provider && s.id === id));
+
+        this.updateSelectedSubjectsDisplay(mode, filtered);
+        console.log('Subject removed:', provider, id);
+    },
+
+    // Вспомогательная функция: Экранирование HTML
+    htmlEscape: function(str) {
+        if (typeof str !== 'string') {
+            str = String(str);
+        }
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     },
     
     // Свернуть/развернуть узел
