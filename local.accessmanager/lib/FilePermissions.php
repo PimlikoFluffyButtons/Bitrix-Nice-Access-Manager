@@ -189,17 +189,11 @@ class FilePermissions
         $permissions = $APPLICATION->GetFileAccessPermission($path);
         $result = [];
 
+        // НОВЫЙ ФОРМАТ: 'G_<id>' => 'permission'
         if (is_array($permissions)) {
             foreach ($permissions as $groupId => $permission) {
-                $groupName = self::getGroupName((int)$groupId);
-                $result[] = [
-                    'subjectType' => 'group',
-                    'subjectId' => (int)$groupId,
-                    'subjectName' => $groupName,
-                    'permission' => $permission,
-                    'permissionName' => self::PERMISSIONS[$permission] ?? $permission,
-                    'source' => 'explicit',
-                ];
+                $key = 'G_' . $groupId;
+                $result[$key] = $permission;
             }
         }
 
@@ -218,23 +212,10 @@ class FilePermissions
             $parentPerms = $APPLICATION->GetFileAccessPermission($parentPath);
             if (is_array($parentPerms)) {
                 foreach ($parentPerms as $groupId => $permission) {
-                    $exists = false;
-                    foreach ($result as $item) {
-                        if ($item['subjectId'] === (int)$groupId) {
-                            $exists = true;
-                            break;
-                        }
-                    }
-                    if (!$exists) {
-                        $result[] = [
-                            'subjectType' => 'group',
-                            'subjectId' => (int)$groupId,
-                            'subjectName' => self::getGroupName((int)$groupId),
-                            'permission' => $permission,
-                            'permissionName' => self::PERMISSIONS[$permission] ?? $permission,
-                            'source' => 'inherited',
-                            'inheritedFrom' => $parentPath,
-                        ];
+                    $key = 'G_' . $groupId;
+                    // Добавляем только если нет explicit права
+                    if (!isset($result[$key])) {
+                        $result[$key] = $permission . '_inherited';
                     }
                 }
             }

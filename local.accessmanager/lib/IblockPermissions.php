@@ -53,7 +53,7 @@ class IblockPermissions
         }
 
         $iblocksRes = IblockTable::getList([
-            'select' => ['ID', 'NAME', 'IBLOCK_TYPE_ID', 'CODE'],
+            'select' => ['ID', 'NAME', 'IBLOCK_TYPE_ID', 'CODE', 'RIGHTS_MODE'],
             'filter' => $iblockFilter,
             'order' => ['SORT' => 'ASC', 'NAME' => 'ASC'],
         ]);
@@ -68,6 +68,7 @@ class IblockPermissions
                 'id' => $iblock['ID'],
                 'name' => $iblock['NAME'],
                 'code' => $iblock['CODE'],
+                'isExtendedMode' => ($iblock['RIGHTS_MODE'] === 'E'),
             ];
         }
 
@@ -103,8 +104,7 @@ class IblockPermissions
 
     /**
      * Получить текущие права инфоблока
-     * Возвращает права групп (через API) и пользователей (через БД)
-     * 
+     *
      * @param int $iblockId
      * @return array
      */
@@ -115,37 +115,28 @@ class IblockPermissions
         }
 
         $result = [];
-        
-        // 1. Получаем права ГРУПП через стандартный API
-        $iblock = new \CIBlock();
-        $permissions = $iblock->GetGroupPermissions($iblockId);
-        
-        foreach ($permissions as $key => $permission) {
-            if (is_numeric($key)) {
-                $groupName = self::getGroupName((int)$key);
-                $result[] = [
-                    'subjectType' => 'group',
-                    'subjectId' => (int)$key,
-                    'subjectName' => $groupName,
-                    'permission' => $permission,
-                    'permissionName' => self::PERMISSIONS[$permission] ?? $permission,
-                    'source' => 'explicit',
-                ];
+
+        // Проверяем, включен ли расширенный режим прав
+        if (UserIblockRights::isExtendedModeEnabled($iblockId)) {
+            // Расширенный режим: используем CIBlockRights
+            // Получаем права групп из расширенного режима
+            $groupPermissions = UserIblockRights::getAllGroupPermissions($iblockId);
+            $result = array_merge($result, $groupPermissions);
+
+            // Получаем права пользователей
+            $userPermissions = UserIblockRights::getAllUserPermissions($iblockId);
+            $result = array_merge($result, $userPermissions);
+        } else {
+            // Стандартный режим: используем старый API
+            // НОВЫЙ ФОРМАТ: 'G_<id>' => 'permission'
+            $iblock = new \CIBlock();
+            $permissions = $iblock->GetGroupPermissions($iblockId);
+
+            // Добавляем права групп в новом формате
+            foreach ($permissions as $groupId => $permission) {
+                $key = 'G_' . $groupId;
+                $result[$key] = $permission;
             }
-        }
-        
-        // 2. Получаем права ПОЛЬЗОВАТЕЛЕЙ через UserIblockPermissions
-        $userPermissions = \Local\AccessManager\UserIblockPermissions::getUsersWithPermissions($iblockId);
-        
-        foreach ($userPermissions as $userPerm) {
-            $result[] = [
-                'subjectType' => 'user',
-                'subjectId' => $userPerm['userId'],
-                'subjectName' => $userPerm['userName'],
-                'permission' => $userPerm['permission'],
-                'permissionName' => self::PERMISSIONS[$userPerm['permission']] ?? $userPerm['permission'],
-                'source' => 'explicit',
-            ];
         }
 
         return $result;
@@ -175,59 +166,6 @@ class IblockPermissions
     }
 
     /**
-     * Установить права для пользователя на инфоблок
-     * ИСПРАВЛЕННЫЙ МЕТОД - через прямую работу с БД
-     * 
-     * @param int $iblockId
-     * @param int $userId
-     * @param string $permission
-     * @return bool
-     */
-    public static function setUserPermission(int $iblockId, int $userId, string $permission): bool
-    {
-        global $DB;
-        
-        if (!Loader::includeModule('iblock')) {
-            return false;
-        }
-
-        // Формируем ключ для пользователя
-        $userKey = 'U' . $userId;
-        
-        // Проверяем, есть ли уже такая запись
-        $existing = $DB->Query("
-            SELECT * FROM b_iblock_group 
-            WHERE IBLOCK_ID = " . (int)$iblockId . " 
-            AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
-        ")->Fetch();
-        
-        if ($existing) {
-            // Обновляем существующую запись
-            $DB->Query("
-                UPDATE b_iblock_group 
-                SET PERMISSION = '" . $DB->ForSql($permission) . "'
-                WHERE IBLOCK_ID = " . (int)$iblockId . " 
-                AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
-            ");
-        } else {
-            // Создаём новую запись
-            $DB->Query("
-                INSERT INTO b_iblock_group (IBLOCK_ID, GROUP_ID, PERMISSION)
-                VALUES (
-                    " . (int)$iblockId . ",
-                    '" . $DB->ForSql($userKey) . "',
-                    '" . $DB->ForSql($permission) . "'
-                )
-            ");
-        }
-        
-        // Очищаем кеш прав инфоблока
-        \CBitrixComponent::clearComponentCache('bitrix:iblock');
-        
-        return true;
-    }
-
-    /**
      * Удалить группу из прав инфоблока
      * 
      * @param int $iblockId
@@ -252,41 +190,10 @@ class IblockPermissions
     }
 
     /**
-     * Удалить пользователя из прав инфоблока
-     * ИСПРАВЛЕННЫЙ МЕТОД - через прямую работу с БД
-     * 
-     * @param int $iblockId
-     * @param int $userId
-     * @return bool
-     */
-    public static function removeUserPermission(int $iblockId, int $userId): bool
-    {
-        global $DB;
-        
-        if (!Loader::includeModule('iblock')) {
-            return false;
-        }
-
-        // Формируем ключ для пользователя
-        $userKey = 'U' . $userId;
-        
-        // Удаляем запись из БД
-        $DB->Query("
-            DELETE FROM b_iblock_group 
-            WHERE IBLOCK_ID = " . (int)$iblockId . " 
-            AND GROUP_ID = '" . $DB->ForSql($userKey) . "'
-        ");
-        
-        // Очищаем кеш прав инфоблока
-        \CBitrixComponent::clearComponentCache('bitrix:iblock');
-
-        return true;
-    }
-
-    /**
      * Сбросить права инфоблока к дефолтным
      * Дефолт: Все пользователи [2] = R, Администраторы [1] = X
-     * 
+     * ВНИМАНИЕ: Если включен расширенный режим - он будет отключен, права групп сохранятся!
+     *
      * @param int $iblockId
      * @return bool
      */
@@ -296,15 +203,27 @@ class IblockPermissions
             return false;
         }
 
-        $defaultPermissions = [
-            1 => 'X', // Администраторы - полный доступ
-            2 => 'R', // Все пользователи - чтение
-        ];
+        try {
+            // Если включен расширенный режим - отключаем его
+            // disableExtendedMode сам сохранит права групп и установит дефолтные, если прав нет
+            if (UserIblockRights::isExtendedModeEnabled($iblockId)) {
+                return UserIblockRights::disableExtendedMode($iblockId);
+            }
 
-        $iblock = new \CIBlock();
-        $iblock->SetPermission($iblockId, $defaultPermissions);
+            // Стандартный режим: просто устанавливаем дефолтные права
+            $defaultPermissions = [
+                1 => 'X', // Администраторы - полный доступ
+                2 => 'R', // Все пользователи - чтение
+            ];
 
-        return true;
+            $iblock = new \CIBlock();
+            $iblock->SetPermission($iblockId, $defaultPermissions);
+
+            return true;
+        } catch (\Exception $e) {
+            error_log('IblockPermissions::resetToDefault error: ' . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -359,34 +278,6 @@ class IblockPermissions
         }
 
         return $groups[$groupId] ?? "Группа #{$groupId}";
-    }
-
-    /**
-     * Получить имя пользователя
-     * НОВЫЙ МЕТОД
-     * 
-     * @param int $userId
-     * @return string
-     */
-    private static function getUserName(int $userId): string
-    {
-        static $users = null;
-
-        if ($users === null) {
-            $users = [];
-        }
-
-        if (!isset($users[$userId])) {
-            $user = \CUser::GetByID($userId)->Fetch();
-            if ($user) {
-                $name = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
-                $users[$userId] = $name ?: $user['LOGIN'];
-            } else {
-                $users[$userId] = "Пользователь #{$userId}";
-            }
-        }
-
-        return $users[$userId];
     }
 
     /**

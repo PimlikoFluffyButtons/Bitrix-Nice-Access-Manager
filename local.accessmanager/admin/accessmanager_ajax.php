@@ -94,13 +94,13 @@ try {
 }
 
 /**
- * Получить права объекта
+ * Получить права объекта (для инспектора - возвращает подробный формат)
  */
 function handleGetPermissions($request)
 {
     $type = $request->getPost('type');
     $id = $request->getPost('id');
-    
+
     if ($type === 'iblock') {
         Loader::includeModule('iblock');
         $permissions = IblockPermissions::getPermissions((int)$id);
@@ -110,9 +110,107 @@ function handleGetPermissions($request)
         echo json_encode(['success' => false, 'error' => 'Неизвестный тип объекта']);
         die();
     }
-    
-    echo json_encode(['success' => true, 'permissions' => $permissions]);
+
+    // Для инспектора преобразуем в подробный формат
+    $detailedPermissions = convertToDetailedFormat($permissions, $type, $id);
+
+    echo json_encode(['success' => true, 'permissions' => $detailedPermissions]);
     die();
+}
+
+/**
+ * Преобразовать упрощенный формат в подробный для инспектора
+ */
+function convertToDetailedFormat($permissions, $type, $id)
+{
+    $result = [];
+
+    foreach ($permissions as $key => $value) {
+        // Пропускаем метаданные
+        if ($key === '_bx_access_meta') {
+            continue;
+        }
+
+        // Парсим ключ: G_1, U_5
+        if (!preg_match('/^([GU])_(\d+)$/', $key, $matches)) {
+            continue;
+        }
+
+        $subjectType = $matches[1] === 'G' ? 'group' : 'user';
+        $subjectId = (int)$matches[2];
+
+        // Убираем суффикс _inherited если есть
+        $isInherited = false;
+        if (strpos($value, '_inherited') !== false) {
+            $value = str_replace('_inherited', '', $value);
+            $isInherited = true;
+        }
+
+        $permission = $value;
+
+        // Получаем имя субъекта
+        if ($subjectType === 'group') {
+            $subjectName = getGroupNameById($subjectId);
+        } else {
+            $subjectName = getUserNameById($subjectId);
+        }
+
+        // Получаем описание права
+        if ($type === 'iblock') {
+            $permissionName = IblockPermissions::PERMISSIONS[$permission] ?? $permission;
+        } else {
+            $permissionName = FilePermissions::PERMISSIONS[$permission] ?? $permission;
+        }
+
+        $result[] = [
+            'subjectType' => $subjectType,
+            'subjectId' => $subjectId,
+            'subjectName' => $subjectName,
+            'permission' => $permission,
+            'permissionName' => $permissionName,
+            'source' => $isInherited ? 'inherited' : 'explicit',
+        ];
+    }
+
+    return $result;
+}
+
+/**
+ * Получить имя группы по ID
+ */
+function getGroupNameById($groupId)
+{
+    static $cache = null;
+
+    if ($cache === null) {
+        $cache = [];
+        $res = \CGroup::GetList('c_sort', 'asc', ['ACTIVE' => 'Y']);
+        while ($group = $res->Fetch()) {
+            $cache[(int)$group['ID']] = $group['NAME'];
+        }
+    }
+
+    return $cache[$groupId] ?? "Группа #{$groupId}";
+}
+
+/**
+ * Получить имя пользователя по ID
+ */
+function getUserNameById($userId)
+{
+    static $cache = [];
+
+    if (!isset($cache[$userId])) {
+        $res = \CUser::GetByID($userId);
+        if ($user = $res->Fetch()) {
+            $userName = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+            $cache[$userId] = $userName ?: $user['LOGIN'];
+        } else {
+            $cache[$userId] = "Пользователь #{$userId}";
+        }
+    }
+
+    return $cache[$userId];
 }
 
 /**
@@ -141,14 +239,17 @@ function handlePreview($request)
     $selected = json_decode($request->getPost('selected'), true);
     $subject = json_decode($request->getPost('subject'), true);
     $permission = $request->getPost('permission');
-    
+
     if (!$selected || !$subject || !$permission) {
         echo json_encode(['success' => false, 'error' => 'Недостаточно данных']);
         die();
     }
-    
+
     $preview = [];
-    
+
+    // Формируем ключ субъекта в новом формате
+    $subjectKey = strtoupper(substr($subject['type'], 0, 1)) . '_' . $subject['id'];
+
     if ($mode === 'iblocks') {
         Loader::includeModule('iblock');
 
@@ -158,13 +259,8 @@ function handlePreview($request)
                 $iblock = \CIBlock::GetByID($iblockId)->Fetch();
                 $currentPerms = IblockPermissions::getPermissions($iblockId);
 
-                $wasPermission = null;
-                foreach ($currentPerms as $perm) {
-                    if ($perm['subjectType'] === $subject['type'] && $perm['subjectId'] === $subject['id']) {
-                        $wasPermission = $perm['permission'];
-                        break;
-                    }
-                }
+                // НОВЫЙ ФОРМАТ: permissions - это объект {'G_1': 'R', 'U_5': 'W'}
+                $wasPermission = $currentPerms[$subjectKey] ?? null;
 
                 $preview[] = [
                     'objectId' => $iblockId,
@@ -188,12 +284,12 @@ function handlePreview($request)
             $path = $item['path'];
             $currentPerms = FilePermissions::getPermissions($path);
 
-            $wasPermission = null;
-            foreach ($currentPerms as $perm) {
-                if ($perm['subjectType'] === $subject['type'] && $perm['subjectId'] === $subject['id'] && $perm['source'] === 'explicit') {
-                    $wasPermission = $perm['permission'];
-                    break;
-                }
+            // НОВЫЙ ФОРМАТ: permissions - это объект {'G_1': 'R'}
+            $wasPermission = $currentPerms[$subjectKey] ?? null;
+
+            // Убираем суффикс _inherited если есть
+            if ($wasPermission && strpos($wasPermission, '_inherited') !== false) {
+                $wasPermission = str_replace('_inherited', '', $wasPermission);
             }
 
             $preview[] = [
@@ -204,7 +300,7 @@ function handlePreview($request)
             ];
         }
     }
-    
+
     echo json_encode(['success' => true, 'preview' => $preview]);
     die();
 }
