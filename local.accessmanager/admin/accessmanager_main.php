@@ -242,6 +242,12 @@ $snapshots = Logger::getSnapshots(20);
     margin-left: 5px;
     title: "Нестандартные права";
 }
+.accessmanager-extended-mode-badge {
+    display: inline-block;
+    margin-left: 5px;
+    font-size: 14px;
+    cursor: help;
+}
 .accessmanager-modal {
     display: none;
     position: fixed;
@@ -353,6 +359,15 @@ $snapshots = Logger::getSnapshots(20);
     color: #721c24;
     display: block;
 }
+.accessmanager-bx-access {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid #e0e0e0;
+}
+.accessmanager-bx-access h4 {
+    margin: 0 0 10px 0;
+    color: #3498db;
+}
 </style>
 
 <?php
@@ -384,12 +399,15 @@ $tabControl->Begin();
                 </div>
                 <div class="accessmanager-tree-children">
                     <?php foreach ($type['children'] as $iblock): ?>
-                    <div class="accessmanager-tree-node" data-type="iblock" data-id="<?= (int)$iblock['iblockId'] ?>">
+                    <div class="accessmanager-tree-node" data-type="iblock" data-id="<?= (int)$iblock['iblockId'] ?>" data-extended-mode="<?= $iblock['isExtendedMode'] ? '1' : '0' ?>">
                         <div class="accessmanager-tree-node-content" onclick="AccessManager.selectSingle('iblock', <?= (int)$iblock['iblockId'] ?>)">
                             <span class="accessmanager-tree-toggle" style="visibility: hidden;">▼</span>
                             <input type="checkbox" class="accessmanager-tree-checkbox" data-type="iblock" data-id="<?= (int)$iblock['iblockId'] ?>" onclick="event.stopPropagation()">
                             <span class="accessmanager-tree-icon">📄</span>
                             <span class="accessmanager-tree-name"><?= htmlspecialcharsbx($iblock['name']) ?></span>
+                            <?php if ($iblock['isExtendedMode']): ?>
+                            <span class="accessmanager-extended-mode-badge" title="Расширенный режим прав (РРУП)">⚠️</span>
+                            <?php endif; ?>
                             <?php if ($iblock['code']): ?>
                             <span style="color: #888; margin-left: 5px;">[<?= htmlspecialcharsbx($iblock['code']) ?>]</span>
                             <?php endif; ?>
@@ -472,6 +490,40 @@ $tabControl->Begin();
             <h4><?= Loc::getMessage('LOCAL_ACCESSMANAGER_INSPECTOR_TITLE') ?></h4>
             <div id="iblocks-inspector-content">
                 <p style="color: #888;"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_INSPECTOR_SELECT_ONE') ?></p>
+            </div>
+        </div>
+
+        <!-- BX.Access Integration Section -->
+        <div class="accessmanager-bx-access" id="iblocks-bx-access">
+            <h4>BX.Access Integration</h4>
+            <div class="accessmanager-form-group">
+                <label>
+                    <input type="checkbox" id="iblock-enable-bx-access" onchange="AccessManager.toggleBXAccess('iblocks', this.checked)">
+                    Enable BX.Access synchronization
+                </label>
+            </div>
+            <div id="iblock-bx-access-options" style="display: none; margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                <div class="accessmanager-form-group">
+                    <label>Permission level:</label>
+                    <select id="iblock-bx-access-level">
+                        <option value="">Select...</option>
+                        <option value="READ">Read</option>
+                        <option value="WRITE">Write</option>
+                        <option value="FULL">Full</option>
+                    </select>
+                </div>
+                <div class="accessmanager-form-group">
+                    <label>
+                        <input type="checkbox" id="iblock-sync-to-bx">
+                        Sync permissions to BX.Access cache
+                    </label>
+                </div>
+                <div class="accessmanager-form-group">
+                    <label>
+                        <input type="checkbox" id="iblock-use-bx-cache">
+                        Use BX.Access client-side cache
+                    </label>
+                </div>
             </div>
         </div>
     </div>
@@ -573,6 +625,40 @@ $tabControl->Begin();
             <h4><?= Loc::getMessage('LOCAL_ACCESSMANAGER_INSPECTOR_TITLE') ?></h4>
             <div id="files-inspector-content">
                 <p style="color: #888;"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_INSPECTOR_SELECT_ONE') ?></p>
+            </div>
+        </div>
+
+        <!-- BX.Access Integration Section -->
+        <div class="accessmanager-bx-access" id="files-bx-access">
+            <h4>BX.Access Integration</h4>
+            <div class="accessmanager-form-group">
+                <label>
+                    <input type="checkbox" id="file-enable-bx-access" onchange="AccessManager.toggleBXAccess('files', this.checked)">
+                    Enable BX.Access synchronization
+                </label>
+            </div>
+            <div id="file-bx-access-options" style="display: none; margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                <div class="accessmanager-form-group">
+                    <label>Permission level:</label>
+                    <select id="file-bx-access-level">
+                        <option value="">Select...</option>
+                        <option value="READ">Read</option>
+                        <option value="WRITE">Write</option>
+                        <option value="FULL">Full</option>
+                    </select>
+                </div>
+                <div class="accessmanager-form-group">
+                    <label>
+                        <input type="checkbox" id="file-sync-to-bx">
+                        Sync permissions to BX.Access cache
+                    </label>
+                </div>
+                <div class="accessmanager-form-group">
+                    <label>
+                        <input type="checkbox" id="file-use-bx-cache">
+                        Use BX.Access client-side cache
+                    </label>
+                </div>
             </div>
         </div>
     </div>
@@ -701,6 +787,29 @@ const AccessManager = {
         const prefix = mode === 'iblocks' ? 'iblock' : 'file';
         document.getElementById(prefix + '-group-select').style.display = type === 'group' ? '' : 'none';
         document.getElementById(prefix + '-user-select').style.display = type === 'user' ? '' : 'none';
+    },
+
+    // Переключение BX.Access интеграции
+    toggleBXAccess: function(mode, enabled) {
+        const prefix = mode === 'iblocks' ? 'iblock' : 'file';
+        document.getElementById(prefix + '-bx-access-options').style.display = enabled ? '' : 'none';
+    },
+
+    // Получить настройки BX.Access
+    getBXAccessSettings: function(mode) {
+        const prefix = mode === 'iblocks' ? 'iblock' : 'file';
+        const enabled = document.getElementById(prefix + '-enable-bx-access').checked;
+
+        if (!enabled) {
+            return null;
+        }
+
+        return {
+            enabled: true,
+            level: document.getElementById(prefix + '-bx-access-level').value,
+            syncToBX: document.getElementById(prefix + '-sync-to-bx').checked,
+            useCache: document.getElementById(prefix + '-use-bx-cache').checked
+        };
     },
     
     // Свернуть/развернуть узел

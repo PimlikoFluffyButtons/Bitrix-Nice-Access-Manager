@@ -36,6 +36,11 @@ class FilePermissions
     ];
 
     /**
+     * Кэш для displayName (runtime cache)
+     */
+    private static $displayNameCache = [];
+
+    /**
      * Получить дерево файлов/папок
      * 
      * @param string $path Относительный путь от DocumentRoot
@@ -96,10 +101,20 @@ class FilePermissions
                 'hasCustomPermissions' => $hasCustomPermissions,
             ];
 
-            // Для папок добавляем признак наличия детей
-            if ($isDir && $depth < self::MAX_DEPTH) {
-                $node['hasChildren'] = self::hasChildren($itemFullPath);
-                $node['children'] = []; // Lazy load
+            // Для папок добавляем displayName из .section.php
+            if ($isDir) {
+                $displayName = self::getDisplayName($itemPath, $item);
+                $node['displayName'] = $displayName;
+                $node['displayNameSource'] = ($displayName !== $item) ? 'section.php' : 'physical';
+
+                if ($depth < self::MAX_DEPTH) {
+                    $node['hasChildren'] = self::hasChildren($itemFullPath);
+                    $node['children'] = []; // Lazy load
+                }
+            } else {
+                // Для файлов displayName = физическое имя
+                $node['displayName'] = $item;
+                $node['displayNameSource'] = 'physical';
             }
 
             $tree[] = $node;
@@ -397,7 +412,7 @@ class FilePermissions
 
     /**
      * Получить название группы
-     * 
+     *
      * @param int $groupId
      * @return string
      */
@@ -414,5 +429,122 @@ class FilePermissions
         }
 
         return $groups[$groupId] ?? "Группа #{$groupId}";
+    }
+
+    /**
+     * Парсить .section.php файл для получения displayName
+     *
+     * @param string $folderPath Полный путь к папке
+     * @return string|null Название из .section.php или null
+     */
+    private static function parseSectionPhp(string $folderPath): ?string
+    {
+        $sectionFile = $folderPath . '/.section.php';
+
+        if (!file_exists($sectionFile)) {
+            return null;
+        }
+
+        // Проверяем кэш
+        if (isset(self::$displayNameCache[$sectionFile])) {
+            return self::$displayNameCache[$sectionFile];
+        }
+
+        try {
+            $content = file_get_contents($sectionFile);
+
+            if ($content === false) {
+                return null;
+            }
+
+            // Определяем кодировку и нормализуем в UTF-8
+            $encoding = self::detectEncoding($content);
+            if ($encoding !== 'UTF-8') {
+                $content = iconv($encoding, 'UTF-8//IGNORE', $content);
+            }
+
+            // Регулярное выражение для поиска NAME в массиве $arSection
+            // Поддерживаем оба синтаксиса: array() и []
+            $patterns = [
+                // "NAME" => "Значение"
+                '/["\']NAME["\']\s*=>\s*["\']([^"\']+)["\']/i',
+                // 'NAME' => 'Значение'
+                // Также обрабатываем экранированные кавычки
+            ];
+
+            foreach ($patterns as $pattern) {
+                if (preg_match($pattern, $content, $matches)) {
+                    $displayName = stripslashes($matches[1]);
+
+                    // Сохраняем в кэш
+                    self::$displayNameCache[$sectionFile] = $displayName;
+
+                    return $displayName;
+                }
+            }
+
+            // Fallback: пробуем найти DISPLAY_NAME
+            if (preg_match('/["\']DISPLAY_NAME["\']\s*=>\s*["\']([^"\']+)["\']/i', $content, $matches)) {
+                $displayName = stripslashes($matches[1]);
+                self::$displayNameCache[$sectionFile] = $displayName;
+                return $displayName;
+            }
+
+            return null;
+
+        } catch (\Exception $e) {
+            // Логируем ошибку парсинга
+            error_log("FilePermissions::parseSectionPhp Error: {$sectionFile} - " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Определить кодировку файла
+     *
+     * @param string $content Содержимое файла
+     * @return string Название кодировки
+     */
+    private static function detectEncoding(string $content): string
+    {
+        // Проверить BOM (Byte Order Mark)
+        if (strpos($content, "\xef\xbb\xbf") === 0) {
+            return 'UTF-8';
+        }
+
+        // Использовать mb_detect_encoding если доступна
+        if (function_exists('mb_detect_encoding')) {
+            $detected = mb_detect_encoding($content, ['UTF-8', 'Windows-1251', 'CP1251'], true);
+            if ($detected) {
+                return $detected;
+            }
+        }
+
+        // Default to UTF-8
+        return 'UTF-8';
+    }
+
+    /**
+     * Получить displayName для папки
+     * Сначала проверяем .section.php, затем fallback на физическое имя
+     *
+     * @param string $folderPath Относительный путь от DocumentRoot
+     * @param string $physicalName Физическое имя папки
+     * @return string Display name
+     */
+    public static function getDisplayName(string $folderPath, string $physicalName): string
+    {
+        $documentRoot = Application::getDocumentRoot();
+        $fullPath = $documentRoot . $folderPath;
+
+        // Попытаться получить из .section.php
+        $displayName = self::parseSectionPhp($fullPath);
+
+        if ($displayName !== null && $displayName !== '') {
+            return $displayName;
+        }
+
+        // Fallback: вернуть физическое имя
+        return $physicalName;
     }
 }

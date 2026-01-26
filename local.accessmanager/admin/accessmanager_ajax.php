@@ -3,14 +3,16 @@
  * AJAX обработчики для модуля управления доступом
  */
 
-// Отключаем вывод ошибок в JSON
-error_reporting(0);
-ini_set('display_errors', 0);
+// ВРЕМЕННО: Включаем вывод ошибок для отладки
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/../accessmanager_debug.log');
 
 use Bitrix\Main\Loader;
 use Local\AccessManager\IblockPermissions;
-use Local\AccessManager\UserIblockPermissions;
 use Local\AccessManager\FilePermissions;
+use Local\AccessManager\UserIblockRights;
 use Local\AccessManager\Logger;
 
 global $USER, $APPLICATION;
@@ -65,7 +67,19 @@ try {
         case 'search_users':
             handleSearchUsers($request);
             break;
-            
+
+        case 'bx_access_get':
+            handleBXAccessGet($request);
+            break;
+
+        case 'bx_access_set':
+            handleBXAccessSet($request);
+            break;
+
+        case 'bx_access_sync':
+            handleBXAccessSync($request);
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'Неизвестное действие: ' . $action]);
             die();
@@ -133,13 +147,13 @@ function handlePreview($request)
     
     if ($mode === 'iblocks') {
         Loader::includeModule('iblock');
-        
+
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
                 $iblock = \CIBlock::GetByID($iblockId)->Fetch();
                 $currentPerms = IblockPermissions::getPermissions($iblockId);
-                
+
                 $wasPermission = null;
                 foreach ($currentPerms as $perm) {
                     if ($perm['subjectType'] === $subject['type'] && $perm['subjectId'] === $subject['id']) {
@@ -147,7 +161,7 @@ function handlePreview($request)
                         break;
                     }
                 }
-                
+
                 $preview[] = [
                     'objectId' => $iblockId,
                     'objectName' => $iblock['NAME'] ?? "Инфоблок #{$iblockId}",
@@ -157,10 +171,19 @@ function handlePreview($request)
             }
         }
     } else {
+        // Проверка: работаем только с группами
+        if ($subject['type'] !== 'group') {
+            echo json_encode([
+                'success' => false,
+                'error' => 'Назначение прав пользователям для файлов будет доступно в следующей версии'
+            ]);
+            die();
+        }
+
         foreach ($selected as $item) {
             $path = $item['path'];
             $currentPerms = FilePermissions::getPermissions($path);
-            
+
             $wasPermission = null;
             foreach ($currentPerms as $perm) {
                 if ($perm['subjectType'] === $subject['type'] && $perm['subjectId'] === $subject['id'] && $perm['source'] === 'explicit') {
@@ -168,7 +191,7 @@ function handlePreview($request)
                     break;
                 }
             }
-            
+
             $preview[] = [
                 'objectId' => $path,
                 'objectName' => $path,
@@ -194,7 +217,7 @@ function handleApply($request)
     
     // ОТЛАДКА - записываем в файл
     file_put_contents(
-        $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
+        $_SERVER['DOCUMENT_ROOT'] . '/local/modules/local.accessmanager/accessmanager_debug.log',
         date('Y-m-d H:i:s') . ' - APPLY REQUEST: ' . json_encode([
             'mode' => $mode,
             'selected' => $selected,
@@ -238,92 +261,86 @@ function handleApply($request)
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
-                
+
                 try {
-                    // Разная логика для групп и пользователей
+                    // Проверяем, включен ли расширенный режим прав
+                    $isExtendedMode = UserIblockRights::isExtendedModeEnabled($iblockId);
+
                     if ($subject['type'] === 'group') {
-                        // ДЛЯ ГРУПП: используем стандартный API Bitrix
-                        $iblock = new \CIBlock();
-                        $currentPerms = $iblock->GetGroupPermissions($iblockId);
-                        $subjectKey = (int)$subject['id'];
-                        $oldPerm = $currentPerms[$subjectKey] ?? null;
-                        
-                        // ОТЛАДКА
-                        file_put_contents(
-                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
-                            date('Y-m-d H:i:s') . " - [GROUP] iblock=$iblockId, groupId={$subjectKey}, oldPerm=" . 
-                            ($oldPerm ?? 'null') . " -> newPerm=$permission\n",
-                            FILE_APPEND
-                        );
-                        
-                        // Устанавливаем новое право
-                        $currentPerms[$subjectKey] = $permission;
-                        $iblock->SetPermission($iblockId, $currentPerms);
-                        
-                        // Логируем
-                        Logger::log(
-                            Logger::OP_SET_PERMISSION,
-                            Logger::OBJ_IBLOCK,
-                            (string)$iblockId,
-                            $subject['type'],
-                            $subject['id'],
-                            $oldPerm ? [$subjectKey => $oldPerm] : null,
-                            [$subjectKey => $permission]
-                        );
-                    } else {
-                        // ДЛЯ ПОЛЬЗОВАТЕЛЕЙ: используем прямую работу с БД через UserIblockPermissions
+                        $groupId = (int)$subject['id'];
+
+                        if ($isExtendedMode) {
+                            // РРУП: используем CIBlockRights
+                            $oldPerm = UserIblockRights::getGroupPermission($iblockId, $groupId);
+
+                            if (UserIblockRights::setGroupPermission($iblockId, $groupId, $permission)) {
+                                // Логируем
+                                Logger::log(
+                                    Logger::OP_SET_PERMISSION,
+                                    Logger::OBJ_IBLOCK,
+                                    (string)$iblockId,
+                                    $subject['type'],
+                                    $subject['id'],
+                                    $oldPerm ? [$groupId => $oldPerm['PERMISSION']] : null,
+                                    [$groupId => $permission]
+                                );
+
+                                $successCount++;
+                            } else {
+                                $errors[] = [
+                                    'id' => $iblockId,
+                                    'message' => 'Не удалось установить права группе в расширенном режиме'
+                                ];
+                            }
+                        } else {
+                            // Стандартный режим: используем SetPermission
+                            $currentPerms = $iblock->GetGroupPermissions($iblockId);
+                            $oldPerm = $currentPerms[$groupId] ?? null;
+
+                            // Устанавливаем новое право (числовой ключ)
+                            $currentPerms[$groupId] = $permission;
+                            $iblock->SetPermission($iblockId, $currentPerms);
+
+                            // Логируем
+                            Logger::log(
+                                Logger::OP_SET_PERMISSION,
+                                Logger::OBJ_IBLOCK,
+                                (string)$iblockId,
+                                $subject['type'],
+                                $subject['id'],
+                                $oldPerm ? [$groupId => $oldPerm] : null,
+                                [$groupId => $permission]
+                            );
+
+                            $successCount++;
+                        }
+                    } elseif ($subject['type'] === 'user') {
+                        // ПОЛЬЗОВАТЕЛЬ: всегда используем расширенный режим прав
                         $userId = (int)$subject['id'];
-                        $oldPerm = UserIblockPermissions::getPermission($iblockId, $userId);
-                        
-                        // ОТЛАДКА
-                        file_put_contents(
-                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
-                            date('Y-m-d H:i:s') . " - [USER] iblock=$iblockId, userId={$userId}, oldPerm=" . 
-                            ($oldPerm ?? 'null') . " -> newPerm=$permission\n",
-                            FILE_APPEND
-                        );
-                        
-                        // Устанавливаем новое право через БД
-                        UserIblockPermissions::setPermission($iblockId, $userId, $permission);
-                        
-                        // Проверяем установку
-                        $newPerm = UserIblockPermissions::getPermission($iblockId, $userId);
-                        
-                        // ОТЛАДКА
-                        file_put_contents(
-                            $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
-                            date('Y-m-d H:i:s') . " - [USER] VERIFY: resultPerm=" . ($newPerm ?? 'null') . 
-                            ($newPerm === $permission ? ' ✓' : ' ✗ FAILED') . "\n",
-                            FILE_APPEND
-                        );
-                        
-                        // Логируем
-                        Logger::log(
-                            Logger::OP_SET_PERMISSION,
-                            Logger::OBJ_IBLOCK,
-                            (string)$iblockId,
-                            $subject['type'],
-                            $subject['id'],
-                            $oldPerm ? ['U' . $userId => $oldPerm] : null,
-                            ['U' . $userId => $permission]
-                        );
+                        $oldPerm = UserIblockRights::getUserPermission($iblockId, $userId);
+
+                        if (UserIblockRights::setUserPermission($iblockId, $userId, $permission)) {
+                            // Логируем
+                            Logger::log(
+                                Logger::OP_SET_PERMISSION,
+                                Logger::OBJ_IBLOCK,
+                                (string)$iblockId,
+                                $subject['type'],
+                                $subject['id'],
+                                $oldPerm ? ['U' . $userId => $oldPerm['PERMISSION']] : null,
+                                ['U' . $userId => $permission]
+                            );
+
+                            $successCount++;
+                        } else {
+                            $errors[] = [
+                                'id' => $iblockId,
+                                'message' => 'Не удалось установить права пользователю. Проверьте доступность расширенного режима.'
+                            ];
+                        }
                     }
-                    
-                    $successCount++;
                 } catch (\Exception $e) {
                     $errors[] = ['id' => $iblockId, 'message' => $e->getMessage()];
-                    
-                    // ОТЛАДКА
-                    file_put_contents(
-                        $_SERVER['DOCUMENT_ROOT'] . '/upload/accessmanager_debug.log',
-                        date('Y-m-d H:i:s') . " - ERROR (iblock=$iblockId): " . $e->getMessage() . "\n",
-                        FILE_APPEND
-                    );
-                }
-            }
-        }
-                        FILE_APPEND
-                    );
                 }
             }
         }
@@ -348,29 +365,39 @@ function handleApply($request)
         
         foreach ($selected as $item) {
             $path = $item['path'];
-            
+
             try {
+                // Проверка: работаем только с группами
+                if ($subject['type'] !== 'group') {
+                    $errors[] = [
+                        'path' => $path,
+                        'message' => 'Назначение прав пользователям для файлов будет доступно в следующей версии'
+                    ];
+                    continue;
+                }
+
                 $currentPerms = $APPLICATION->GetFileAccessPermission($path);
                 if (!is_array($currentPerms)) {
                     $currentPerms = [];
                 }
-                
-                $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
-                $oldPerm = $currentPerms[$subjectKey] ?? null;
-                
-                $currentPerms[$subjectKey] = $permission;
+
+                $groupId = (int)$subject['id'];
+                $oldPerm = $currentPerms[$groupId] ?? null;
+
+                // Устанавливаем право для группы (числовой ключ)
+                $currentPerms[$groupId] = $permission;
                 $APPLICATION->SetFileAccessPermission($path, $currentPerms);
-                
+
                 Logger::log(
                     Logger::OP_SET_PERMISSION,
                     $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE,
                     $path,
                     $subject['type'],
                     $subject['id'],
-                    $oldPerm ? [$subjectKey => $oldPerm] : null,
-                    [$subjectKey => $permission]
+                    $oldPerm ? [$groupId => $oldPerm] : null,
+                    [$groupId => $permission]
                 );
-                
+
                 $successCount++;
             } catch (\Exception $e) {
                 $errors[] = ['path' => $path, 'message' => $e->getMessage()];
@@ -481,23 +508,59 @@ function handleRemoveSubject($request)
     if ($mode === 'iblocks') {
         Loader::includeModule('iblock');
         $iblock = new \CIBlock();
-        
+
         foreach ($selected as $item) {
             if ($item['type'] === 'iblock') {
                 $iblockId = (int)$item['id'];
                 try {
-                    $currentPerms = $iblock->GetGroupPermissions($iblockId);
-                    $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
-                    
-                    // Проверяем наличие прав (для групп - в массиве, для пользователей - проверим после удаления)
-                    $hasPermission = isset($currentPerms[$subjectKey]);
-                    
-                    // Удаляем права разными методами для групп и пользователей
+                    // Проверяем, включен ли расширенный режим прав
+                    $isExtendedMode = UserIblockRights::isExtendedModeEnabled($iblockId);
+
                     if ($subject['type'] === 'group') {
-                        if ($hasPermission) {
-                            unset($currentPerms[$subjectKey]);
-                            $iblock->SetPermission($iblockId, $currentPerms);
-                            
+                        $groupId = (int)$subject['id'];
+
+                        if ($isExtendedMode) {
+                            // РРУП: используем CIBlockRights
+                            if (UserIblockRights::removeGroupPermission($iblockId, $groupId)) {
+                                Logger::log(
+                                    Logger::OP_REMOVE_PERMISSION,
+                                    Logger::OBJ_IBLOCK,
+                                    (string)$iblockId,
+                                    $subject['type'],
+                                    $subject['id']
+                                );
+
+                                $successCount++;
+                            } else {
+                                $errors[] = [
+                                    'id' => $iblockId,
+                                    'message' => 'Не удалось удалить права группы в расширенном режиме'
+                                ];
+                            }
+                        } else {
+                            // Стандартный режим: используем SetPermission
+                            $currentPerms = $iblock->GetGroupPermissions($iblockId);
+
+                            if (isset($currentPerms[$groupId])) {
+                                unset($currentPerms[$groupId]);
+                                $iblock->SetPermission($iblockId, $currentPerms);
+
+                                Logger::log(
+                                    Logger::OP_REMOVE_PERMISSION,
+                                    Logger::OBJ_IBLOCK,
+                                    (string)$iblockId,
+                                    $subject['type'],
+                                    $subject['id']
+                                );
+
+                                $successCount++;
+                            }
+                        }
+                    } elseif ($subject['type'] === 'user') {
+                        // ПОЛЬЗОВАТЕЛЬ: используем расширенный режим прав
+                        $userId = (int)$subject['id'];
+
+                        if (UserIblockRights::removeUserPermission($iblockId, $userId)) {
                             Logger::log(
                                 Logger::OP_REMOVE_PERMISSION,
                                 Logger::OBJ_IBLOCK,
@@ -505,22 +568,14 @@ function handleRemoveSubject($request)
                                 $subject['type'],
                                 $subject['id']
                             );
-                            
+
                             $successCount++;
+                        } else {
+                            $errors[] = [
+                                'id' => $iblockId,
+                                'message' => 'Не удалось удалить права пользователя'
+                            ];
                         }
-                    } else {
-                        // Для пользователей удаляем через БД с помощью UserIblockPermissions
-                        UserIblockPermissions::removePermission($iblockId, (int)$subject['id']);
-                        
-                        Logger::log(
-                            Logger::OP_REMOVE_PERMISSION,
-                            Logger::OBJ_IBLOCK,
-                            (string)$iblockId,
-                            $subject['type'],
-                            $subject['id']
-                        );
-                        
-                        $successCount++;
                     }
                 } catch (\Exception $e) {
                     $errors[] = ['id' => $iblockId, 'message' => $e->getMessage()];
@@ -533,13 +588,22 @@ function handleRemoveSubject($request)
         foreach ($selected as $item) {
             $path = $item['path'];
             try {
+                // Проверка: работаем только с группами
+                if ($subject['type'] !== 'group') {
+                    $errors[] = [
+                        'path' => $path,
+                        'message' => 'Удаление прав пользователей для файлов будет доступно в следующей версии'
+                    ];
+                    continue;
+                }
+
                 $currentPerms = $APPLICATION->GetFileAccessPermission($path);
-                $subjectKey = ($subject['type'] === 'group') ? $subject['id'] : 'U' . $subject['id'];
-                
-                if (is_array($currentPerms) && isset($currentPerms[$subjectKey])) {
-                    unset($currentPerms[$subjectKey]);
+                $groupId = (int)$subject['id'];
+
+                if (is_array($currentPerms) && isset($currentPerms[$groupId])) {
+                    unset($currentPerms[$groupId]);
                     $APPLICATION->SetFileAccessPermission($path, $currentPerms);
-                    
+
                     Logger::log(
                         Logger::OP_REMOVE_PERMISSION,
                         $item['type'] === 'folder' ? Logger::OBJ_FOLDER : Logger::OBJ_FILE,
@@ -547,7 +611,7 @@ function handleRemoveSubject($request)
                         $subject['type'],
                         $subject['id']
                     );
-                    
+
                     $successCount++;
                 }
             } catch (\Exception $e) {
@@ -616,5 +680,145 @@ function handleSearchUsers($request)
     }
     
     echo json_encode(['success' => true, 'users' => $users]);
+    die();
+}
+
+/**
+ * Получить BX.Access права объекта
+ */
+function handleBXAccessGet($request)
+{
+    $objectId = $request->getPost('objectId');
+    $objectType = $request->getPost('objectType');
+
+    if (!$objectId || !$objectType) {
+        echo json_encode(['success' => false, 'error' => 'Недостаточно данных']);
+        die();
+    }
+
+    // Заглушка: в реальной реализации здесь будет вызов BX.Access API
+    // Пока возвращаем mock данные для тестирования UI
+    $accessLevel = null;
+
+    // Здесь можно добавить логику получения из IndexedDB кэша или серверного хранилища
+    // if (function_exists('\\BX\\Access::get')) {
+    //     $accessLevel = \BX\Access::get($objectId);
+    // }
+
+    echo json_encode([
+        'success' => true,
+        'data' => [
+            'level' => $accessLevel,
+            'cached' => false,
+            'source' => 'server'
+        ]
+    ]);
+    die();
+}
+
+/**
+ * Установить BX.Access права
+ */
+function handleBXAccessSet($request)
+{
+    $objectId = $request->getPost('objectId');
+    $objectType = $request->getPost('objectType');
+    $level = $request->getPost('level');
+    $syncToOurSystem = $request->getPost('syncToOurSystem') === 'true';
+
+    if (!$objectId || !$objectType || !$level) {
+        echo json_encode(['success' => false, 'error' => 'Недостаточно данных']);
+        die();
+    }
+
+    // Валидация уровня прав
+    $validLevels = ['READ', 'WRITE', 'FULL'];
+    if (!in_array($level, $validLevels)) {
+        echo json_encode(['success' => false, 'error' => 'Неверный уровень прав']);
+        die();
+    }
+
+    try {
+        // Заглушка: в реальной реализации здесь будет вызов BX.Access API
+        // if (function_exists('\\BX\\Access::set')) {
+        //     \BX\Access::set($objectId, $level);
+        // }
+
+        // Если требуется синхронизация с нашей системой
+        if ($syncToOurSystem) {
+            // Здесь можно добавить логику синхронизации с IblockPermissions или FilePermissions
+            // Например, конвертировать BX.Access уровни в наши уровни прав (D, R, W, X)
+        }
+
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'objectId' => $objectId,
+                'level' => $level,
+                'synced' => $syncToOurSystem
+            ]
+        ]);
+    } catch (\Exception $e) {
+        echo json_encode([
+            'success' => false,
+            'error' => $e->getMessage()
+        ]);
+    }
+
+    die();
+}
+
+/**
+ * Синхронизировать BX.Access кэш
+ */
+function handleBXAccessSync($request)
+{
+    $mode = $request->getPost('mode');
+    $objectIds = json_decode($request->getPost('objectIds'), true);
+
+    if (!$mode || !$objectIds) {
+        echo json_encode(['success' => false, 'error' => 'Недостаточно данных']);
+        die();
+    }
+
+    try {
+        $syncedCount = 0;
+        $errors = [];
+
+        // Заглушка: в реальной реализации здесь будет синхронизация
+        // Пока просто возвращаем успешный результат для тестирования
+        foreach ($objectIds as $objectId) {
+            // Здесь можно добавить логику синхронизации:
+            // 1. Получить текущие права из нашей системы
+            // 2. Преобразовать в BX.Access формат
+            // 3. Обновить BX.Access кэш
+            // 4. Инвалидировать IndexedDB кэш на клиенте
+
+            $syncedCount++;
+        }
+
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'syncedCount' => $syncedCount,
+                'errors' => $errors,
+                'timestamp' => time()
+            ],
+            'bx_access_cache_invalidation' => [
+                'action' => 'sync',
+                'mode' => $mode,
+                'itemCount' => count($objectIds),
+                'itemIds' => $objectIds,
+                'invalidateAll' => false,
+                'timestamp' => time()
+            ]
+        ]);
+    } catch (\Exception $e) {
+        echo json_encode([
+            'success' => false,
+            'error' => $e->getMessage()
+        ]);
+    }
+
     die();
 }
