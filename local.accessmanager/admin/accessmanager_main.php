@@ -1309,27 +1309,418 @@ const AccessManager = {
     searchUsers: function(input, resultsId) {
         const query = input.value.trim();
         if (query.length < 2) return;
-        
+
         clearTimeout(this.searchTimeout);
         this.searchTimeout = setTimeout(() => {
+            // Try IndexedDB first for faster results
+            if (window.BXFinder && BXFinder.isInitialized()) {
+                BXFinder.search(query).then(results => {
+                    if (results && results.length > 0) {
+                        const select = input.parentElement.querySelector('select');
+                        select.innerHTML = '<option value="">-- Выберите пользователя --</option>';
+                        results.forEach(u => {
+                            select.innerHTML += '<option value="' + u.id + '">' + u.name + ' (' + (u.email || u.login || u.id) + ')</option>';
+                        });
+                        return;
+                    }
+                    // Fallback to server if no results in cache
+                    this.searchUsersServer(query, input);
+                }).catch(() => {
+                    // Fallback to server on error
+                    this.searchUsersServer(query, input);
+                });
+            } else {
+                // Fallback to server if IndexedDB not available
+                this.searchUsersServer(query, input);
+            }
+        }, 300);
+    },
+
+    // Серверный поиск пользователей (fallback)
+    searchUsersServer: function(query, input) {
+        fetch('/bitrix/admin/local_accessmanager.php', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'action=search_users&sessid=' + this.sessid + '&query=' + encodeURIComponent(query)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.users) {
+                const select = input.parentElement.querySelector('select');
+                select.innerHTML = '<option value="">-- Выберите пользователя --</option>';
+                data.users.forEach(u => {
+                    select.innerHTML += '<option value="' + u.ID + '">' + u.NAME + ' (' + u.LOGIN + ')</option>';
+                });
+            }
+        });
+    }
+};
+
+// ==============================================================
+// BX.Finder IndexedDB Integration
+// ==============================================================
+
+const BXFinder = {
+    DB_NAME: 'BitrixAccessManager',
+    DB_VERSION: 1,
+    CACHE_TTL: {
+        subjects: 24 * 60 * 60 * 1000,      // 24 hours
+        permissions: 1 * 60 * 60 * 1000,    // 1 hour
+        search_index: 30 * 60 * 1000         // 30 minutes
+    },
+
+    db: null,
+    initialized: false,
+
+    /**
+     * Initialize IndexedDB
+     */
+    init: function() {
+        const self = this;
+
+        return new Promise(function(resolve, reject) {
+            if (self.db) {
+                resolve(self.db);
+                return;
+            }
+
+            // Check if IndexedDB is supported
+            if (!window.indexedDB) {
+                console.warn('IndexedDB not supported, falling back to server search');
+                reject('IndexedDB not supported');
+                return;
+            }
+
+            const request = indexedDB.open(self.DB_NAME, self.DB_VERSION);
+
+            request.onerror = function() {
+                console.error('IndexedDB open error:', request.error);
+                reject(request.error);
+            };
+
+            request.onupgradeneeded = function(event) {
+                const db = event.target.result;
+
+                // Store 1: subjects (users and groups)
+                if (!db.objectStoreNames.contains('subjects')) {
+                    const subjectsStore = db.createObjectStore('subjects', { keyPath: 'id' });
+                    subjectsStore.createIndex('provider', 'provider', { unique: false });
+                    subjectsStore.createIndex('name', 'name', { unique: false });
+                    subjectsStore.createIndex('timestamp', 'timestamp', { unique: false });
+                    subjectsStore.createIndex('provider_timestamp', ['provider', 'timestamp'], { unique: false });
+                }
+
+                // Store 2: permissions cache
+                if (!db.objectStoreNames.contains('permissions')) {
+                    const permStore = db.createObjectStore('permissions', { keyPath: 'id' });
+                    permStore.createIndex('subject_id', 'subject_id', { unique: false });
+                    permStore.createIndex('object_id', 'object_id', { unique: false });
+                    permStore.createIndex('timestamp', 'timestamp', { unique: false });
+                    permStore.createIndex('subject_object', ['subject_id', 'object_id'], { unique: false });
+                }
+
+                // Store 3: search index cache
+                if (!db.objectStoreNames.contains('search_index')) {
+                    const searchStore = db.createObjectStore('search_index', { keyPath: 'query_hash' });
+                    searchStore.createIndex('timestamp', 'timestamp', { unique: false });
+                }
+            };
+
+            request.onsuccess = function(event) {
+                self.db = event.target.result;
+                self.initialized = true;
+                console.log('IndexedDB initialized successfully');
+                resolve(self.db);
+            };
+        });
+    },
+
+    /**
+     * Check if IndexedDB is initialized
+     */
+    isInitialized: function() {
+        return this.initialized && this.db !== null;
+    },
+
+    /**
+     * Search in IndexedDB cache
+     */
+    search: function(query) {
+        const self = this;
+
+        return new Promise(function(resolve, reject) {
+            if (!self.db) {
+                reject('IndexedDB not initialized');
+                return;
+            }
+
+            const normalizedQuery = query.toLowerCase().trim();
+
+            if (!normalizedQuery || normalizedQuery.length < 2) {
+                resolve([]);
+                return;
+            }
+
+            // Generate hash for search index
+            const queryHash = self.simpleHash(normalizedQuery);
+
+            // Step 1: Check search index cache
+            const transaction = self.db.transaction(['search_index'], 'readonly');
+            const store = transaction.objectStore('search_index');
+            const getRequest = store.get(queryHash);
+
+            getRequest.onsuccess = function() {
+                const cached = getRequest.result;
+
+                // Check if cache is fresh (< 30 minutes)
+                if (cached && (Date.now() - cached.timestamp) < self.CACHE_TTL.search_index) {
+                    console.log('Search from cache:', normalizedQuery, '(' + cached.results.length + ' results)');
+                    resolve(cached.results);
+                    return;
+                }
+
+                // Step 2: Search in subjects store
+                self.searchInSubjects(normalizedQuery).then(function(results) {
+                    // Cache the results
+                    self.cacheSearchResults(queryHash, normalizedQuery, results);
+                    resolve(results);
+                }).catch(reject);
+            };
+
+            getRequest.onerror = function() {
+                // Fallback to direct search
+                self.searchInSubjects(normalizedQuery).then(resolve).catch(reject);
+            };
+        });
+    },
+
+    /**
+     * Search directly in subjects store
+     */
+    searchInSubjects: function(query) {
+        const self = this;
+
+        return new Promise(function(resolve, reject) {
+            const transaction = self.db.transaction(['subjects'], 'readonly');
+            const store = transaction.objectStore('subjects');
+            const index = store.index('name');
+
+            // Use IDBKeyRange for prefix search
+            const range = IDBKeyRange.bound(query, query + '\uffff');
+            const request = index.openCursor(range);
+            const results = [];
+
+            request.onsuccess = function(event) {
+                const cursor = event.target.result;
+
+                if (cursor) {
+                    const subject = cursor.value;
+
+                    // Check if not stale (< 24 hours)
+                    if ((Date.now() - subject.timestamp) < self.CACHE_TTL.subjects) {
+                        // Additional filtering for substring match
+                        if (subject.name.toLowerCase().includes(query)) {
+                            results.push({
+                                id: subject.id,
+                                name: subject.name,
+                                provider: subject.provider,
+                                email: subject.email,
+                                login: subject.login
+                            });
+                        }
+                    }
+
+                    // Limit to 50 results for performance
+                    if (results.length < 50) {
+                        cursor.continue();
+                    } else {
+                        resolve(results);
+                    }
+                } else {
+                    // End of results
+                    resolve(results);
+                }
+            };
+
+            request.onerror = function() {
+                reject(request.error);
+            };
+        });
+    },
+
+    /**
+     * Cache search results
+     */
+    cacheSearchResults: function(queryHash, query, results) {
+        const self = this;
+
+        try {
+            const transaction = self.db.transaction(['search_index'], 'readwrite');
+            const store = transaction.objectStore('search_index');
+
+            store.put({
+                query_hash: queryHash,
+                query: query,
+                results: results,
+                resultCount: results.length,
+                timestamp: Date.now(),
+                ttl: self.CACHE_TTL.search_index
+            });
+        } catch (e) {
+            console.error('Error caching search results:', e);
+        }
+    },
+
+    /**
+     * Save subjects to IndexedDB
+     */
+    saveSubjects: function(subjects) {
+        const self = this;
+
+        return new Promise(function(resolve, reject) {
+            if (!self.db) {
+                reject('IndexedDB not initialized');
+                return;
+            }
+
+            const transaction = self.db.transaction(['subjects'], 'readwrite');
+            const store = transaction.objectStore('subjects');
+
+            subjects.forEach(function(subject) {
+                // Add timestamp if not present
+                if (!subject.timestamp) {
+                    subject.timestamp = Date.now();
+                }
+                store.put(subject);
+            });
+
+            transaction.oncomplete = function() {
+                console.log('Saved ' + subjects.length + ' subjects to IndexedDB');
+                resolve();
+            };
+
+            transaction.onerror = function() {
+                reject(transaction.error);
+            };
+        });
+    },
+
+    /**
+     * Load all users from server and cache
+     */
+    loadAllUsers: function() {
+        const self = this;
+
+        return new Promise(function(resolve, reject) {
             fetch('/bitrix/admin/local_accessmanager.php', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: 'action=search_users&sessid=' + this.sessid + '&query=' + encodeURIComponent(query)
+                body: 'action=load_all_users&sessid=' + AccessManager.sessid + '&limit=100&offset=0'
             })
             .then(r => r.json())
             .then(data => {
                 if (data.success && data.users) {
-                    const select = input.parentElement.querySelector('select');
-                    select.innerHTML = '<option value="">-- Выберите пользователя --</option>';
-                    data.users.forEach(u => {
-                        select.innerHTML += '<option value="' + u.ID + '">' + u.NAME + ' (' + u.LOGIN + ')</option>';
-                    });
+                    // Save to IndexedDB
+                    self.saveSubjects(data.users).then(function() {
+                        resolve(data.users);
+                    }).catch(reject);
+                } else {
+                    reject(data.error || 'Failed to load users');
                 }
-            });
-        }, 300);
+            })
+            .catch(reject);
+        });
+    },
+
+    /**
+     * Simple hash function for query strings
+     */
+    simpleHash: function(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return 'q_' + Math.abs(hash).toString(36);
+    },
+
+    /**
+     * Cleanup old data
+     */
+    cleanup: function() {
+        const self = this;
+
+        if (!self.db) return;
+
+        const now = Date.now();
+
+        // Cleanup subjects older than 24 hours
+        self.cleanupStore('subjects', self.CACHE_TTL.subjects, now);
+
+        // Cleanup permissions older than 1 hour
+        self.cleanupStore('permissions', self.CACHE_TTL.permissions, now);
+
+        // Cleanup search index older than 30 minutes
+        self.cleanupStore('search_index', self.CACHE_TTL.search_index, now);
+    },
+
+    /**
+     * Cleanup a specific store
+     */
+    cleanupStore: function(storeName, maxAge, now) {
+        const self = this;
+
+        try {
+            const transaction = self.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const index = store.index('timestamp');
+
+            const range = IDBKeyRange.upperBound(now - maxAge);
+            const request = index.openCursor(range);
+
+            let deletedCount = 0;
+
+            request.onsuccess = function(event) {
+                const cursor = event.target.result;
+
+                if (cursor) {
+                    cursor.delete();
+                    deletedCount++;
+                    cursor.continue();
+                } else {
+                    if (deletedCount > 0) {
+                        console.log('Cleanup: Deleted ' + deletedCount + ' old records from ' + storeName);
+                    }
+                }
+            };
+        } catch (e) {
+            console.error('Error during cleanup:', e);
+        }
     }
 };
+
+// Initialize IndexedDB on page load
+document.addEventListener('DOMContentLoaded', function() {
+    BXFinder.init().then(function() {
+        console.log('BX.Finder initialized');
+
+        // Load users in background
+        BXFinder.loadAllUsers().then(function(users) {
+            console.log('Loaded ' + users.length + ' users into IndexedDB cache');
+        }).catch(function(err) {
+            console.error('Error loading users:', err);
+        });
+
+        // Setup cleanup interval (every hour)
+        setInterval(function() {
+            BXFinder.cleanup();
+        }, 60 * 60 * 1000);
+
+    }).catch(function(err) {
+        console.warn('IndexedDB initialization failed, using server search:', err);
+    });
+});
 </script>
 
 <?php

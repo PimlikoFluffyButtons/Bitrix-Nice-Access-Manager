@@ -899,3 +899,75 @@ function handleBXAccessSync($request)
 
     die();
 }
+/**
+ * Загрузить всех пользователей для IndexedDB кэширования
+ */
+function handleLoadAllUsers($request)
+{
+    $limit = (int)$request->getPost('limit', 100);
+    $offset = (int)$request->getPost('offset', 0);
+
+    if ($limit > 500) {
+        $limit = 500; // Safety limit
+    }
+
+    try {
+        $users = [];
+        $groups = [];
+
+        // Получить пользователей
+        $dbUser = \CUser::GetList(
+            'ID',
+            'ASC',
+            ['ACTIVE' => 'Y'],
+            [
+                'SELECT' => ['ID', 'LOGIN', 'NAME', 'LAST_NAME', 'EMAIL'],
+                'NAV_PARAMS' => [
+                    'nPageSize' => $limit,
+                    'iNumPage' => ($offset / $limit) + 1
+                ]
+            ]
+        );
+
+        while ($arUser = $dbUser->Fetch()) {
+            $users[] = [
+                'id' => 'user_' . $arUser['ID'],
+                'provider' => 'user',
+                'name' => trim(($arUser['NAME'] ?? '') . ' ' . ($arUser['LAST_NAME'] ?? '')),
+                'email' => $arUser['EMAIL'] ?? '',
+                'login' => $arUser['LOGIN'] ?? '',
+                'timestamp' => time() * 1000
+            ];
+        }
+
+        // Получить группы пользователей
+        $dbGroup = \CGroup::GetList('c_sort', 'asc', ['ACTIVE' => 'Y']);
+        while ($arGroup = $dbGroup->Fetch()) {
+            $groups[] = [
+                'id' => 'group_' . $arGroup['ID'],
+                'provider' => 'group',
+                'name' => $arGroup['NAME'] ?? 'Group #' . $arGroup['ID'],
+                'timestamp' => time() * 1000
+            ];
+        }
+
+        // Объединить users и groups
+        $allSubjects = array_merge($users, $groups);
+
+        echo json_encode([
+            'success' => true,
+            'users' => $allSubjects,
+            'count' => count($allSubjects),
+            'offset' => $offset,
+            'limit' => $limit,
+            'hasMore' => count($users) >= $limit
+        ]);
+    } catch (\Exception $e) {
+        echo json_encode([
+            'success' => false,
+            'error' => $e->getMessage()
+        ]);
+    }
+
+    die();
+}
