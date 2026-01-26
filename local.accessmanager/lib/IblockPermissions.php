@@ -93,6 +93,7 @@ class IblockPermissions
                     'iblockId' => (int)$iblock['id'],
                     'name' => $iblock['name'],
                     'code' => $iblock['code'],
+                    'isExtendedMode' => $iblock['isExtendedMode'],
                 ];
             }
 

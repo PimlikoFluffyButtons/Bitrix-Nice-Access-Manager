@@ -408,6 +408,58 @@ $snapshots = Logger::getSnapshots(20);
 .accessmanager-subject-item button:hover {
     opacity: 0.7;
 }
+.accessmanager-mode-selector {
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid #e0e0e0;
+}
+.accessmanager-mode-selector h4 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: #333;
+}
+.accessmanager-mode-tabs {
+    display: flex;
+    gap: 10px;
+}
+.accessmanager-mode-tab {
+    flex: 1;
+    padding: 12px 16px;
+    border: 2px solid #c8c8c8;
+    border-radius: 6px;
+    background: #f9f9f9;
+    cursor: pointer;
+    text-align: center;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+.accessmanager-mode-tab:hover {
+    background: #f0f0f0;
+    border-color: #3498db;
+}
+.accessmanager-mode-tab.active {
+    background: #3498db;
+    color: #fff;
+    border-color: #3498db;
+}
+.accessmanager-mode-tab small {
+    display: block;
+    font-size: 11px;
+    margin-top: 4px;
+    opacity: 0.8;
+}
+.accessmanager-mode-panel {
+    display: block;
+}
+.accessmanager-info-box {
+    padding: 12px;
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    font-size: 13px;
+    color: #856404;
+}
 </style>
 
 <?php
@@ -461,48 +513,83 @@ $tabControl->Begin();
     </div>
     
     <div class="accessmanager-right">
-        <div class="accessmanager-form-group">
-            <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_TYPE') ?></label>
-            <div class="accessmanager-radio-group">
-                <label>
-                    <input type="radio" name="iblock_subject_type" value="group" checked onchange="AccessManager.toggleSubjectType('iblocks', 'group')">
-                    <?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_GROUP') ?>
-                </label>
-                <label>
-                    <input type="radio" name="iblock_subject_type" value="user" onchange="AccessManager.toggleSubjectType('iblocks', 'user')">
-                    <?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_USER') ?>
-                </label>
+        <!-- РЕЖИМЫ: Стандартный / Расширенный -->
+        <div class="accessmanager-mode-selector" id="iblocks-mode-selector" style="display: none;">
+            <h4>Режим работы</h4>
+            <div class="accessmanager-mode-tabs">
+                <button type="button" class="accessmanager-mode-tab active"
+                        data-mode="standard"
+                        onclick="AccessManager.setMode('iblocks', 'standard')">
+                    📋 Стандартный режим<br>
+                    <small>Группы пользователей</small>
+                </button>
+                <button type="button" class="accessmanager-mode-tab"
+                        data-mode="extended"
+                        onclick="AccessManager.setMode('iblocks', 'extended')">
+                    ⚙️ Расширенный режим<br>
+                    <small>BX.Access (РРУП)</small>
+                </button>
             </div>
         </div>
-        
-        <div class="accessmanager-form-group" id="iblock-group-select">
-            <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_GROUP') ?></label>
-            <select id="iblock-group">
-                <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_GROUP') ?></option>
-                <?php foreach ($groups as $group): ?>
-                <option value="<?= (int)$group['ID'] ?>"><?= htmlspecialcharsbx($group['NAME']) ?> [<?= $group['ID'] ?>]</option>
-                <?php endforeach; ?>
-            </select>
+
+        <!-- ПАНЕЛЬ 1: Стандартный режим -->
+        <div class="accessmanager-mode-panel" id="iblocks-mode-standard">
+            <div class="accessmanager-form-group">
+                <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_GROUP') ?></label>
+                <select id="iblock-group">
+                    <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_GROUP') ?></option>
+                    <?php foreach ($groups as $group): ?>
+                    <option value="<?= (int)$group['ID'] ?>"><?= htmlspecialcharsbx($group['NAME']) ?> [<?= $group['ID'] ?>]</option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div class="accessmanager-form-group">
+                <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERMISSION_LEVEL') ?></label>
+                <select id="iblock-permission">
+                    <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_PERMISSION') ?></option>
+                    <option value="D"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_DENIED') ?></option>
+                    <option value="R"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_READ') ?></option>
+                    <option value="W"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_WRITE') ?></option>
+                    <option value="X"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_FULL') ?></option>
+                </select>
+            </div>
         </div>
-        
-        <div class="accessmanager-form-group" id="iblock-user-select" style="display: none;">
-            <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SUBJECT_USER') ?></label>
-            <input type="text" id="iblock-user-search" placeholder="<?= Loc::getMessage('LOCAL_ACCESSMANAGER_USER_SEARCH') ?>" oninput="AccessManager.searchUsers(this, 'iblock-user-results')">
-            <select id="iblock-user" style="margin-top: 5px;">
-                <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_USER') ?></option>
-            </select>
-            <div id="iblock-user-results"></div>
-        </div>
-        
-        <div class="accessmanager-form-group">
-            <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERMISSION_LEVEL') ?></label>
-            <select id="iblock-permission">
-                <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_PERMISSION') ?></option>
-                <option value="D"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_DENIED') ?></option>
-                <option value="R"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_READ') ?></option>
-                <option value="W"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_WRITE') ?></option>
-                <option value="X"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_FULL') ?></option>
-            </select>
+
+        <!-- ПАНЕЛЬ 2: Расширенный режим (BX.Access) -->
+        <div class="accessmanager-mode-panel" id="iblocks-mode-extended" style="display: none;">
+            <div class="accessmanager-info-box">
+                ⚠️ <strong>Расширенный режим (РРУП)</strong><br>
+                Выбранные инфоблоки используют Ролевые Разрешения Уровня Пользователя.
+                Вы можете назначать права пользователям, группам и подразделениям.
+            </div>
+
+            <div class="accessmanager-form-group">
+                <label>Выбранные субъекты:</label>
+                <div class="accessmanager-selected-subjects" id="iblocks-mode-extended-subjects">
+                    <p style="color: #888;">Нажмите кнопку ниже для добавления субъектов</p>
+                </div>
+            </div>
+
+            <div class="accessmanager-form-group">
+                <label><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERMISSION_LEVEL') ?></label>
+                <select id="iblock-permission-extended">
+                    <option value=""><?= Loc::getMessage('LOCAL_ACCESSMANAGER_SELECT_PERMISSION') ?></option>
+                    <option value="D"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_DENIED') ?></option>
+                    <option value="R"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_READ') ?></option>
+                    <option value="W"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_WRITE') ?></option>
+                    <option value="X"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_FULL') ?></option>
+                </select>
+            </div>
+
+            <div class="accessmanager-buttons">
+                <button type="button" class="accessmanager-btn accessmanager-btn-success" onclick="AccessManager.openAccessDialog('iblocks')">
+                    ➕ Добавить субъектов (BX.Access)
+                </button>
+                <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeAllSubjects('iblocks')">
+                    ❌ Удалить всех
+                </button>
+            </div>
         </div>
         
         <div class="accessmanager-buttons">
@@ -795,8 +882,109 @@ const AccessManager = {
         iblocks: [],
         files: []
     },
-    
-    // Переключение типа субъекта
+    currentAccessMode: {
+        iblocks: 'standard',
+        files: 'standard'
+    },
+
+    // Переключение режима (Стандартный / Расширенный)
+    setMode: function(mode, modeType) {
+        console.log('setMode called:', mode, modeType);
+
+        // Проверяем, есть ли выбранные инфоблоки
+        const selected = this.getSelected(mode);
+        if (selected.length === 0) {
+            alert('Пожалуйста, выберите инфоблоки слева');
+            return;
+        }
+
+        // Проверяем, есть ли среди выбранных инфоблоки с расширенным режимом
+        const hasExtendedMode = this.checkSelectedIblocksMode(mode);
+
+        if (modeType === 'extended' && !hasExtendedMode) {
+            alert('Расширенный режим доступен только для инфоблоков с включенной РРУП (Ролевые Разрешения Уровня Пользователя).\n\nВыбранные инфоблоки не имеют расширенного режима (отмечены значком ⚠️).');
+            return;
+        }
+
+        // Скрыть обе панели
+        const standardPanel = document.getElementById(mode + '-mode-standard');
+        const extendedPanel = document.getElementById(mode + '-mode-extended');
+
+        if (standardPanel) standardPanel.style.display = 'none';
+        if (extendedPanel) extendedPanel.style.display = 'none';
+
+        // Показать выбранную панель
+        if (modeType === 'standard' && standardPanel) {
+            standardPanel.style.display = 'block';
+        } else if (modeType === 'extended' && extendedPanel) {
+            extendedPanel.style.display = 'block';
+        }
+
+        // Обновить активную кнопку
+        document.querySelectorAll('#' + mode + '-mode-selector .accessmanager-mode-tab').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.mode === modeType) {
+                btn.classList.add('active');
+            }
+        });
+
+        // Сохранить текущий режим
+        this.currentAccessMode[mode] = modeType;
+
+        console.log('Mode switched to:', modeType);
+    },
+
+    // Проверка, есть ли среди выбранных инфоблоков с расширенным режимом
+    checkSelectedIblocksMode: function(mode) {
+        if (mode !== 'iblocks') return false;
+
+        const selectedCheckboxes = document.querySelectorAll('#iblocks-tree .accessmanager-tree-checkbox:checked[data-type="iblock"]');
+
+        for (let checkbox of selectedCheckboxes) {
+            const node = checkbox.closest('.accessmanager-tree-node');
+            if (node && node.dataset.extendedMode === '1') {
+                return true;
+            }
+        }
+
+        return false;
+    },
+
+    // Обновление видимости селектора режимов
+    updateModeSelector: function(mode) {
+        if (mode !== 'iblocks') return;
+
+        const selector = document.getElementById('iblocks-mode-selector');
+        if (!selector) return;
+
+        const hasExtendedMode = this.checkSelectedIblocksMode(mode);
+
+        if (hasExtendedMode) {
+            // Показать селектор режимов
+            selector.style.display = 'block';
+        } else {
+            // Скрыть селектор, переключить на стандартный режим
+            selector.style.display = 'none';
+            this.setMode(mode, 'standard');
+        }
+    },
+
+    // Удаление всех выбранных субъектов (для расширенного режима)
+    removeAllSubjects: function(mode) {
+        if (!confirm('Удалить всех выбранных субъектов?')) {
+            return;
+        }
+
+        const container = document.getElementById(mode + '-mode-extended-subjects');
+        if (container) {
+            container.innerHTML = '<p style="color: #888;">Нажмите кнопку ниже для добавления субъектов</p>';
+        }
+
+        this.selectedSubjects[mode] = [];
+        console.log('All subjects removed for mode:', mode);
+    },
+
+    // Переключение типа субъекта (старый метод, теперь не используется)
     toggleSubjectType: function(mode, type) {
         const prefix = mode === 'iblocks' ? 'iblock' : 'file';
         document.getElementById(prefix + '-group-select').style.display = type === 'group' ? '' : 'none';
@@ -861,15 +1049,17 @@ const AccessManager = {
     updateSelectedSubjectsDisplay: function(mode, subjects) {
         console.log('updateSelectedSubjectsDisplay called:', mode, subjects);
 
-        const container = document.getElementById(mode + '-selected-subjects');
+        // Для режима инфоблоков используем контейнер расширенного режима
+        const containerId = mode === 'iblocks' ? mode + '-mode-extended-subjects' : mode + '-selected-subjects';
+        const container = document.getElementById(containerId);
 
         if (!container) {
-            console.error('Container not found:', mode + '-selected-subjects');
+            console.error('Container not found:', containerId);
             return;
         }
 
         if (!subjects || subjects.length === 0) {
-            container.innerHTML = '<p style="color: #888;">Нажмите кнопку ниже для выбора пользователей, групп или подразделений</p>';
+            container.innerHTML = '<p style="color: #888;">Нажмите кнопку ниже для добавления субъектов</p>';
             this.selectedSubjects[mode] = [];
             return;
         }
@@ -951,6 +1141,9 @@ const AccessManager = {
         const node = checkbox.closest('.accessmanager-tree-node');
         const childCheckboxes = node.querySelectorAll('.accessmanager-tree-children .accessmanager-tree-checkbox');
         childCheckboxes.forEach(cb => cb.checked = checkbox.checked);
+
+        // Обновить видимость селектора режимов
+        this.updateModeSelector('iblocks');
     },
     
     // Выбрать все
@@ -968,6 +1161,11 @@ const AccessManager = {
     // Выбор одного объекта для инспектора
     selectSingle: function(type, id) {
         this.loadInspector(type, id);
+
+        // Обновить видимость селектора режимов для инфоблоков
+        if (type === 'iblock' || type === 'iblock_type') {
+            this.updateModeSelector('iblocks');
+        }
     },
     
     // Загрузка инспектора прав
