@@ -590,8 +590,17 @@ $tabControl->Begin();
                     ❌ Удалить всех
                 </button>
             </div>
+
+            <div class="accessmanager-buttons" style="margin-top: 15px;">
+                <button type="button"
+                        class="accessmanager-btn accessmanager-btn-primary"
+                        onclick="AccessManager.applyBXAccessPermissions('iblocks')"
+                        style="font-size: 16px; padding: 12px 24px;">
+                    ✅ Применить права для выбранных субъектов
+                </button>
+            </div>
         </div>
-        
+
         <div class="accessmanager-buttons">
             <button type="button" class="accessmanager-btn accessmanager-btn-primary" onclick="AccessManager.preview('iblocks')">
                 <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_PREVIEW') ?>
@@ -1001,17 +1010,40 @@ const AccessManager = {
             return;
         }
 
-        const bind = 'accessmanager_' + mode;
+        // КРИТИЧНО: Уникальный bind ID для каждого режима и времени
+        const bind = 'accessmanager_' + mode + '_' + Date.now();
 
         try {
             BX.Access.ShowForm({
+                // 1. Уникальный bind ID
                 bind: bind,
+
+                // 2. Показывать уже выбранные элементы
                 showSelected: true,
+
+                // 3. Указать доступные провайдеры
+                items: [
+                    {entityType: 'users', title: 'Пользователи'},
+                    {entityType: 'groups', title: 'Группы'},
+                    {entityType: 'departments', title: 'Подразделения'}
+                ],
+
+                // 4. Callback при выборе
                 callback: (selected) => {
                     console.log('BX.Access callback received:', selected);
                     this.onSubjectsSelected(mode, selected);
-                }
+                },
+
+                // 5. Опциональные параметры
+                useContainer: true,
+                multiple: true,
+                enableAll: false,
+                enableUsers: true,
+                enableDepartments: true,
+                enableSonetgroups: true
             });
+
+            console.log('BX.Access dialog opened successfully');
         } catch (err) {
             console.error('Error opening BX.Access dialog:', err);
             alert('Ошибка открытия диалога BX.Access: ' + err.message);
@@ -1029,20 +1061,57 @@ const AccessManager = {
 
         const subjects = [];
 
-        // Преобразуем формат BX.Access в наш формат
+        // BX.Access возвращает объект формата:
+        // {
+        //   'users': { '1': {id: '1', name: 'Иван Петров', ...}, '2': {...} },
+        //   'groups': { '5': {id: '5', name: 'Менеджеры', ...} },
+        //   'departments': { '10': {id: '10', name: 'Отдел продаж', ...} }
+        // }
         for (let provider in selected) {
             for (let id in selected[provider]) {
                 const item = selected[provider][id];
+
+                // КРИТИЧНО: Преобразуем в единый консистентный формат
                 subjects.push({
-                    provider: provider,  // 'users', 'groups', 'departments'
-                    id: id,
-                    name: item.name || item.title || ('ID: ' + id)
+                    provider: provider,           // 'users', 'groups', 'departments', 'sonetgroups'
+                    id: id,                       // ID субъекта
+                    name: item.name || item.title || item.label || ('ID: ' + id),
+                    type: this.mapProviderToType(provider),  // 'user', 'group', 'department'
+
+                    // Дополнительная информация для отображения
+                    avatar: item.avatar || null,
+                    email: item.email || null,
+                    position: item.position || null
                 });
             }
         }
 
         console.log('Processed subjects:', subjects);
+
+        // Сохранить выбранные субъекты
+        this.selectedSubjects[mode] = subjects;
+
+        // Обновить отображение
         this.updateSelectedSubjectsDisplay(mode, subjects);
+
+        // НОВОЕ: Автоматически установить права по умолчанию
+        // После выбора субъектов предлагаем выбрать уровень прав
+        const permissionSelect = document.getElementById('iblock-permission-extended');
+        if (permissionSelect && permissionSelect.value) {
+            // Если права уже выбраны - можем сразу применить
+            console.log('Permission already selected:', permissionSelect.value);
+        }
+    },
+
+    // НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Маппинг типов провайдеров
+    mapProviderToType: function(provider) {
+        const map = {
+            'users': 'user',
+            'groups': 'group',
+            'departments': 'department',
+            'sonetgroups': 'group'  // Социальные группы трактуем как обычные группы
+        };
+        return map[provider] || 'user';
     },
 
     // НОВЫЙ МЕТОД: Отображение выбранных субъектов
@@ -1064,27 +1133,51 @@ const AccessManager = {
             return;
         }
 
-        // Иконки для разных типов провайдеров
+        // Улучшенные иконки для разных типов провайдеров
         const providerIcons = {
             'users': '👤',
             'groups': '👥',
-            'sonetgroups': '👥',
+            'sonetgroups': '🔵',  // Отличаем соц.группы
             'departments': '🏢'
         };
 
+        const providerLabels = {
+            'users': 'Пользователь',
+            'groups': 'Группа',
+            'sonetgroups': 'Соц.группа',
+            'departments': 'Подразделение'
+        };
+
         let html = '<div class="accessmanager-subject-list">';
-        subjects.forEach(subject => {
+
+        subjects.forEach((subject, index) => {
             const icon = providerIcons[subject.provider] || '❓';
+            const label = providerLabels[subject.provider] || subject.provider;
             const escapedName = this.htmlEscape(subject.name);
             const escapedProvider = this.htmlEscape(subject.provider);
             const escapedId = this.htmlEscape(subject.id);
 
-            html += `<div class="accessmanager-subject-item">
-                ${icon} ${escapedName} (${escapedId})
-                <button type="button" onclick="AccessManager.removeSubject('${mode}', '${escapedProvider}', '${escapedId}')">❌</button>
+            // КРИТИЧНО: Используем data-атрибуты для удаления
+            html += `<div class="accessmanager-subject-item"
+                          data-provider="${escapedProvider}"
+                          data-id="${escapedId}"
+                          data-index="${index}">
+                <span class="accessmanager-subject-icon">${icon}</span>
+                <span class="accessmanager-subject-name">${escapedName}</span>
+                <span class="accessmanager-subject-type">(${label})</span>
+                <button type="button"
+                        class="accessmanager-subject-remove"
+                        onclick="AccessManager.removeSubject('${mode}', '${escapedProvider}', '${escapedId}')"
+                        title="Удалить">×</button>
             </div>`;
         });
+
         html += '</div>';
+
+        // НОВОЕ: Показать количество выбранных субъектов
+        html += `<div class="accessmanager-subject-count" style="margin-top: 10px; font-size: 12px; color: #666;">
+            Выбрано субъектов: <strong>${subjects.length}</strong>
+        </div>`;
 
         container.innerHTML = html;
         this.selectedSubjects[mode] = subjects;
@@ -1107,10 +1200,112 @@ const AccessManager = {
         console.log('removeSubject called:', mode, provider, id);
 
         const subjects = this.selectedSubjects[mode] || [];
-        const filtered = subjects.filter(s => !(s.provider === provider && s.id === id));
 
+        // КРИТИЧНО: Фильтруем по provider И id (строгое соответствие)
+        const filtered = subjects.filter(s => {
+            // Приводим к строке для сравнения
+            const sameProvider = String(s.provider) === String(provider);
+            const sameId = String(s.id) === String(id);
+            return !(sameProvider && sameId);
+        });
+
+        console.log('Before removal:', subjects.length, 'After:', filtered.length);
+
+        // Обновляем отображение с новым списком
         this.updateSelectedSubjectsDisplay(mode, filtered);
+
+        // НОВОЕ: Если список пуст - сбросить выбор прав
+        if (filtered.length === 0) {
+            const permissionSelect = document.getElementById(
+                mode === 'iblocks' ? 'iblock-permission-extended' : 'file-permission'
+            );
+            if (permissionSelect) {
+                permissionSelect.value = '';
+            }
+        }
+
         console.log('Subject removed:', provider, id);
+    },
+
+    // НОВЫЙ МЕТОД: Применить права для выбранных BX.Access субъектов
+    applyBXAccessPermissions: function(mode) {
+        console.log('applyBXAccessPermissions called for mode:', mode);
+
+        // 1. Получить выбранные инфоблоки
+        const selected = this.getSelected(mode);
+        if (selected.length === 0) {
+            alert('Пожалуйста, выберите инфоблоки слева');
+            return;
+        }
+
+        // 2. Получить выбранных субъектов
+        const subjects = this.selectedSubjects[mode] || [];
+        if (subjects.length === 0) {
+            alert('Пожалуйста, выберите субъектов через BX.Access');
+            return;
+        }
+
+        // 3. Получить уровень прав
+        const permissionSelect = document.getElementById('iblock-permission-extended');
+        const permission = permissionSelect ? permissionSelect.value : '';
+        if (!permission) {
+            alert('Пожалуйста, выберите уровень прав');
+            return;
+        }
+
+        // 4. Подтверждение
+        if (!confirm(`Применить права "${permission}" для ${subjects.length} субъект(ов) на ${selected.length} инфоблок(ов)?`)) {
+            return;
+        }
+
+        // 5. Отправить запрос на сервер
+        const progressEl = document.getElementById(mode + '-progress');
+        const resultEl = document.getElementById(mode + '-result');
+
+        if (progressEl) progressEl.style.display = 'block';
+        if (resultEl) resultEl.style.display = 'none';
+
+        fetch('/bitrix/admin/local_accessmanager.php', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'action=apply_bx_access_subjects&sessid=' + this.sessid +
+                  '&mode=' + encodeURIComponent(mode) +
+                  '&selected=' + encodeURIComponent(JSON.stringify(selected)) +
+                  '&subjects=' + encodeURIComponent(JSON.stringify(subjects)) +
+                  '&permission=' + encodeURIComponent(permission)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (progressEl) progressEl.style.display = 'none';
+
+            if (data.success) {
+                if (resultEl) {
+                    resultEl.className = 'accessmanager-result success';
+                    resultEl.innerHTML = `Успешно обработано: ${data.successCount} операций`;
+                    if (data.errors && data.errors.length > 0) {
+                        resultEl.innerHTML += `<br>Ошибок: ${data.errors.length}`;
+                    }
+                    resultEl.style.display = 'block';
+                }
+                console.log('Permissions applied successfully:', data);
+            } else {
+                if (resultEl) {
+                    resultEl.className = 'accessmanager-result error';
+                    resultEl.innerHTML = data.error || 'Ошибка применения';
+                    resultEl.style.display = 'block';
+                }
+                console.error('Error applying permissions:', data);
+            }
+        })
+        .catch(err => {
+            if (progressEl) progressEl.style.display = 'none';
+            if (resultEl) {
+                resultEl.className = 'accessmanager-result error';
+                resultEl.innerHTML = 'Ошибка: ' + err.message;
+                resultEl.style.display = 'block';
+            }
+            console.error('AJAX error:', err);
+        });
     },
 
     // Вспомогательная функция: Экранирование HTML

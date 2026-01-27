@@ -84,6 +84,10 @@ try {
             handleLoadAllUsers($request);
             break;
 
+        case 'apply_bx_access_subjects':
+            handleApplyBXAccessSubjects($request);
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'Неизвестное действие: ' . $action]);
             die();
@@ -1065,5 +1069,305 @@ function handleLoadAllUsers($request)
         ]);
     }
 
+    die();
+}
+
+/**
+ * Применить права для субъектов, выбранных через BX.Access
+ * Обрабатывает множественных субъектов (users, groups, departments)
+ */
+function handleApplyBXAccessSubjects($request)
+{
+    global $USER;
+
+    $mode = $request->getPost('mode');
+    $selected = json_decode($request->getPost('selected'), true);
+    $subjects = json_decode($request->getPost('subjects'), true);
+    $permission = $request->getPost('permission');
+
+    // ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+    if (!$USER->IsAdmin() || !check_bitrix_sessid()) {
+        echo json_encode([
+            'success' => false,
+            'error' => 'Доступ запрещен'
+        ]);
+        die();
+    }
+
+    if (!$selected || !$subjects || !$permission) {
+        echo json_encode([
+            'success' => false,
+            'error' => 'Недостаточно данных. Требуются: selected, subjects, permission'
+        ]);
+        die();
+    }
+
+    if ($mode !== 'iblocks') {
+        echo json_encode([
+            'success' => false,
+            'error' => 'BX.Access поддерживается только для режима инфоблоков'
+        ]);
+        die();
+    }
+
+    // Валидация уровня прав
+    $validPermissions = ['D', 'R', 'U', 'S', 'W', 'X'];
+    if (!in_array($permission, $validPermissions)) {
+        echo json_encode([
+            'success' => false,
+            'error' => 'Недопустимый уровень прав: ' . $permission
+        ]);
+        die();
+    }
+
+    // ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ
+    $logData = [
+        'mode' => $mode,
+        'selected_count' => count($selected),
+        'subjects_count' => count($subjects),
+        'permission' => $permission,
+        'timestamp' => date('Y-m-d H:i:s')
+    ];
+    Logger::log(
+        'bx_access_apply_start',
+        Logger::OBJ_IBLOCK,
+        'batch',
+        'system',
+        0,
+        null,
+        $logData
+    );
+
+    Loader::includeModule('iblock');
+
+    $successCount = 0;
+    $errors = [];
+    $snapshotData = [];
+
+    // СОЗДАНИЕ СНАПШОТА ДО ИЗМЕНЕНИЙ
+    foreach ($selected as $item) {
+        if ($item['type'] === 'iblock') {
+            $iblockId = (int)$item['id'];
+            $iblock = new \CIBlock();
+            $currentPerms = $iblock->GetGroupPermissions($iblockId);
+
+            $snapshotData[] = [
+                'id' => $iblockId,
+                'permissions' => $currentPerms,
+            ];
+        }
+    }
+
+    if (!empty($snapshotData)) {
+        Logger::createSnapshot(Logger::OBJ_IBLOCK, $snapshotData);
+    }
+
+    // ПРИМЕНЕНИЕ ПРАВ ДЛЯ КАЖДОГО СУБЪЕКТА НА КАЖДЫЙ ИНФОБЛОК
+    foreach ($selected as $item) {
+        if ($item['type'] !== 'iblock') {
+            continue;
+        }
+
+        $iblockId = (int)$item['id'];
+
+        foreach ($subjects as $subject) {
+            try {
+                // Определяем тип субъекта
+                $subjectType = $subject['type']; // 'user', 'group', 'department'
+                $subjectId = (int)$subject['id'];
+                $provider = $subject['provider']; // 'users', 'groups', 'departments'
+
+                // КРИТИЧНО: Обработка разных типов субъектов
+                if ($subjectType === 'user') {
+                    // ПОЛЬЗОВАТЕЛЬ: требует расширенный режим прав
+                    if (!UserIblockRights::isExtendedModeEnabled($iblockId)) {
+                        // Включаем расширенный режим
+                        if (!UserIblockRights::enableExtendedMode($iblockId)) {
+                            $errors[] = [
+                                'iblockId' => $iblockId,
+                                'subjectId' => $subjectId,
+                                'subjectType' => $subjectType,
+                                'message' => 'Не удалось включить расширенный режим для инфоблока'
+                            ];
+                            continue;
+                        }
+                    }
+
+                    $oldPerm = UserIblockRights::getUserPermission($iblockId, $subjectId);
+
+                    if (UserIblockRights::setUserPermission($iblockId, $subjectId, $permission)) {
+                        // Логируем
+                        Logger::log(
+                            Logger::OP_SET_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            'user',
+                            $subjectId,
+                            $oldPerm ? ['U_' . $subjectId => $oldPerm['PERMISSION']] : null,
+                            ['U_' . $subjectId => $permission]
+                        );
+
+                        $successCount++;
+                    } else {
+                        $errors[] = [
+                            'iblockId' => $iblockId,
+                            'subjectId' => $subjectId,
+                            'subjectType' => 'user',
+                            'message' => 'Не удалось установить права пользователю'
+                        ];
+                    }
+
+                } elseif ($subjectType === 'group') {
+                    // ГРУППА: может работать в обоих режимах
+                    $isExtendedMode = UserIblockRights::isExtendedModeEnabled($iblockId);
+
+                    if ($isExtendedMode) {
+                        // Расширенный режим: через CIBlockRights
+                        $oldPerm = UserIblockRights::getGroupPermission($iblockId, $subjectId);
+
+                        if (UserIblockRights::setGroupPermission($iblockId, $subjectId, $permission)) {
+                            Logger::log(
+                                Logger::OP_SET_PERMISSION,
+                                Logger::OBJ_IBLOCK,
+                                (string)$iblockId,
+                                'group',
+                                $subjectId,
+                                $oldPerm ? ['G_' . $subjectId => $oldPerm['PERMISSION']] : null,
+                                ['G_' . $subjectId => $permission]
+                            );
+
+                            $successCount++;
+                        } else {
+                            $errors[] = [
+                                'iblockId' => $iblockId,
+                                'subjectId' => $subjectId,
+                                'subjectType' => 'group',
+                                'message' => 'Не удалось установить права группе (расширенный режим)'
+                            ];
+                        }
+                    } else {
+                        // Стандартный режим: через CIBlock::SetPermission
+                        $iblock = new \CIBlock();
+                        $currentPerms = $iblock->GetGroupPermissions($iblockId);
+                        $oldPerm = $currentPerms[$subjectId] ?? null;
+
+                        $currentPerms[$subjectId] = $permission;
+                        $iblock->SetPermission($iblockId, $currentPerms);
+
+                        Logger::log(
+                            Logger::OP_SET_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            'group',
+                            $subjectId,
+                            $oldPerm ? [$subjectId => $oldPerm] : null,
+                            [$subjectId => $permission]
+                        );
+
+                        $successCount++;
+                    }
+
+                } elseif ($subjectType === 'department') {
+                    // ПОДРАЗДЕЛЕНИЕ: требует расширенный режим + специальная обработка
+                    // В Bitrix подразделения представлены как группы с префиксом DR
+
+                    if (!UserIblockRights::isExtendedModeEnabled($iblockId)) {
+                        if (!UserIblockRights::enableExtendedMode($iblockId)) {
+                            $errors[] = [
+                                'iblockId' => $iblockId,
+                                'subjectId' => $subjectId,
+                                'subjectType' => 'department',
+                                'message' => 'Не удалось включить расширенный режим для подразделения'
+                            ];
+                            continue;
+                        }
+                    }
+
+                    // Формируем GROUP_CODE для подразделения
+                    $groupCode = 'DR' . $subjectId;
+
+                    // Используем CIBlockRights напрямую
+                    $obRights = new \CIBlockRights($iblockId);
+                    $arRights = $obRights->GetRights();
+
+                    // Ищем существующее право
+                    $existingRightId = null;
+                    if (is_array($arRights)) {
+                        foreach ($arRights as $rightId => $right) {
+                            if (isset($right['GROUP_CODE']) && $right['GROUP_CODE'] === $groupCode) {
+                                $existingRightId = is_numeric($rightId) ? (int)$rightId : (isset($right['ID']) ? (int)$right['ID'] : null);
+                                break;
+                            }
+                        }
+                    }
+
+                    $taskId = UserIblockRights::TASK_MAP[$permission];
+
+                    if ($existingRightId) {
+                        // Обновляем
+                        $result = \CIBlockRights::Update($existingRightId, ['TASK_ID' => $taskId]);
+                    } else {
+                        // Добавляем
+                        $result = \CIBlockRights::Add([
+                            'IBLOCK_ID' => $iblockId,
+                            'GROUP_CODE' => $groupCode,
+                            'TASK_ID' => $taskId,
+                        ]);
+                    }
+
+                    if ($result) {
+                        Logger::log(
+                            Logger::OP_SET_PERMISSION,
+                            Logger::OBJ_IBLOCK,
+                            (string)$iblockId,
+                            'department',
+                            $subjectId,
+                            null,
+                            ['DR_' . $subjectId => $permission]
+                        );
+
+                        $successCount++;
+                    } else {
+                        $errors[] = [
+                            'iblockId' => $iblockId,
+                            'subjectId' => $subjectId,
+                            'subjectType' => 'department',
+                            'message' => 'Не удалось установить права подразделению'
+                        ];
+                    }
+                }
+
+            } catch (\Exception $e) {
+                $errors[] = [
+                    'iblockId' => $iblockId,
+                    'subjectId' => $subjectId ?? 0,
+                    'subjectType' => $subjectType ?? 'unknown',
+                    'message' => $e->getMessage()
+                ];
+            }
+        }
+    }
+
+    // Итоговое логирование
+    Logger::log(
+        'bx_access_apply_complete',
+        Logger::OBJ_IBLOCK,
+        'batch',
+        'system',
+        0,
+        null,
+        [
+            'successCount' => $successCount,
+            'errorsCount' => count($errors),
+            'timestamp' => date('Y-m-d H:i:s')
+        ]
+    );
+
+    echo json_encode([
+        'success' => true,
+        'successCount' => $successCount,
+        'errors' => $errors,
+        'totalOperations' => count($selected) * count($subjects)
+    ]);
     die();
 }
