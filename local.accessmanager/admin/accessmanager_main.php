@@ -554,6 +554,19 @@ $tabControl->Begin();
                     <option value="X"><?= Loc::getMessage('LOCAL_ACCESSMANAGER_PERM_FULL') ?></option>
                 </select>
             </div>
+
+            <!-- Кнопки стандартного режима -->
+            <div class="accessmanager-buttons">
+                <button type="button" class="accessmanager-btn accessmanager-btn-primary" onclick="AccessManager.preview('iblocks')">
+                    <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_PREVIEW') ?>
+                </button>
+                <button type="button" class="accessmanager-btn accessmanager-btn-warning" onclick="AccessManager.resetDefault('iblocks')">
+                    <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_RESET_DEFAULT') ?>
+                </button>
+                <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeSubject('iblocks')">
+                    <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_REMOVE_SUBJECT') ?>
+                </button>
+            </div>
         </div>
 
         <!-- ПАНЕЛЬ 2: Расширенный режим (BX.Access) -->
@@ -599,18 +612,6 @@ $tabControl->Begin();
                     ✅ Применить права для выбранных субъектов
                 </button>
             </div>
-        </div>
-
-        <div class="accessmanager-buttons">
-            <button type="button" class="accessmanager-btn accessmanager-btn-primary" onclick="AccessManager.preview('iblocks')">
-                <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_PREVIEW') ?>
-            </button>
-            <button type="button" class="accessmanager-btn accessmanager-btn-warning" onclick="AccessManager.resetDefault('iblocks')">
-                <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_RESET_DEFAULT') ?>
-            </button>
-            <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeSubject('iblocks')">
-                <?= Loc::getMessage('LOCAL_ACCESSMANAGER_BTN_REMOVE_SUBJECT') ?>
-            </button>
         </div>
         
         <div class="accessmanager-progress" id="iblocks-progress">
@@ -1483,8 +1484,38 @@ const AccessManager = {
     // Получить выбранного субъекта
     getSubject: function(mode) {
         const prefix = mode === 'iblocks' ? 'iblock' : 'file';
-        const subjectType = document.querySelector('input[name="' + prefix + '_subject_type"]:checked').value;
-        
+
+        // Для инфоблоков: проверяем текущий режим
+        if (mode === 'iblocks') {
+            const currentMode = this.currentAccessMode[mode] || 'standard';
+
+            if (currentMode === 'standard') {
+                // Стандартный режим: только группы через select
+                const groupId = document.getElementById('iblock-group').value;
+                return groupId ? {type: 'group', id: parseInt(groupId)} : null;
+            } else {
+                // Расширенный режим: субъекты из BX.Access
+                const subjects = this.selectedSubjects[mode] || [];
+                if (subjects.length > 0) {
+                    return {
+                        type: subjects[0].type,
+                        id: parseInt(subjects[0].id)
+                    };
+                }
+                return null;
+            }
+        }
+
+        // Для файлов: стандартная логика с radio
+        const subjectTypeEl = document.querySelector('input[name="' + prefix + '_subject_type"]:checked');
+        if (!subjectTypeEl) {
+            // Fallback: если нет radio - проверяем select группы
+            const groupId = document.getElementById(prefix + '-group').value;
+            return groupId ? {type: 'group', id: parseInt(groupId)} : null;
+        }
+
+        const subjectType = subjectTypeEl.value;
+
         if (subjectType === 'group') {
             const groupId = document.getElementById(prefix + '-group').value;
             return groupId ? {type: 'group', id: parseInt(groupId)} : null;
