@@ -514,7 +514,7 @@ $tabControl->Begin();
     
     <div class="accessmanager-right">
         <!-- РЕЖИМЫ: Стандартный / Расширенный -->
-        <div class="accessmanager-mode-selector" id="iblocks-mode-selector" style="display: none;">
+        <div class="accessmanager-mode-selector" id="iblocks-mode-selector">
             <h4>Режим работы</h4>
             <div class="accessmanager-mode-tabs">
                 <button type="button" class="accessmanager-mode-tab active"
@@ -630,24 +630,6 @@ $tabControl->Begin();
             </div>
         </div>
 
-        <!-- BX.Access Integration Section (НОВАЯ РЕАЛИЗАЦИЯ) -->
-        <div class="accessmanager-bx-access" id="iblocks-bx-access">
-            <h4>BX.Access: Расширенный выбор субъектов</h4>
-            <div class="accessmanager-form-group">
-                <label>Выбранные субъекты:</label>
-                <div class="accessmanager-selected-subjects" id="iblocks-selected-subjects">
-                    <p style="color: #888;">Нажмите кнопку ниже для выбора пользователей, групп или подразделений</p>
-                </div>
-            </div>
-            <div class="accessmanager-buttons">
-                <button type="button" class="accessmanager-btn accessmanager-btn-success" onclick="AccessManager.openAccessDialog('iblocks')">
-                    ➕ Открыть диалог BX.Access
-                </button>
-                <button type="button" class="accessmanager-btn accessmanager-btn-danger" onclick="AccessManager.removeSelectedSubjects('iblocks')">
-                    ❌ Удалить всех выбранных
-                </button>
-            </div>
-        </div>
     </div>
 </div>
 
@@ -908,13 +890,9 @@ const AccessManager = {
             return;
         }
 
-        // Проверяем, есть ли среди выбранных инфоблоки с расширенным режимом
-        const hasExtendedMode = this.checkSelectedIblocksMode(mode);
-
-        if (modeType === 'extended' && !hasExtendedMode) {
-            alert('Расширенный режим доступен только для инфоблоков с включенной РРУП (Ролевые Разрешения Уровня Пользователя).\n\nВыбранные инфоблоки не имеют расширенного режима (отмечены значком ⚠️).');
-            return;
-        }
+        // УДАЛЕНО: проверка hasExtendedMode
+        // Расширенный режим доступен всегда
+        // Инфоблок автоматически переключится в РРУП при применении прав пользователю
 
         // Скрыть обе панели
         const standardPanel = document.getElementById(mode + '-mode-standard');
@@ -967,15 +945,17 @@ const AccessManager = {
         const selector = document.getElementById('iblocks-mode-selector');
         if (!selector) return;
 
-        const hasExtendedMode = this.checkSelectedIblocksMode(mode);
+        // ИЗМЕНЕНО: Селектор режимов ВСЕГДА виден
+        // Расширенный режим доступен для всех инфоблоков
+        selector.style.display = 'block';
 
-        if (hasExtendedMode) {
-            // Показать селектор режимов
-            selector.style.display = 'block';
-        } else {
-            // Скрыть селектор, переключить на стандартный режим
-            selector.style.display = 'none';
-            this.setMode(mode, 'standard');
+        // Инициализация: если режим не установлен - ставим стандартный
+        if (!this.currentAccessMode[mode]) {
+            this.currentAccessMode[mode] = 'standard';
+            const standardPanel = document.getElementById(mode + '-mode-standard');
+            const extendedPanel = document.getElementById(mode + '-mode-extended');
+            if (standardPanel) standardPanel.style.display = 'block';
+            if (extendedPanel) extendedPanel.style.display = 'none';
         }
     },
 
